@@ -61,12 +61,13 @@ class ScenePlanner:
                 "prompt": prompt,
                 "stream": False,
                 "format": "json",
+                "keep_alive": "1h",
                 "options": {"temperature": 0.3},
             }
             response = requests.post(
                 f"{OLLAMA_BASE_URL}/api/generate",
                 json=payload,
-                timeout=30.0,
+                timeout=120.0,
             )
             response.raise_for_status()
             result = response.json()

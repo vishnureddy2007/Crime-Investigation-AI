@@ -247,9 +247,10 @@ def plan_scenes_from_narrative(
                 "model": OLLAMA_MODEL,
                 "prompt": prompt,
                 "stream": False,
+                "keep_alive": "1h",
                 "options": {"temperature": 0.3},
             },
-            timeout=30.0,
+            timeout=120.0,
         )
         response.raise_for_status()
         result = response.json()
