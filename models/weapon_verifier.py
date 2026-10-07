@@ -228,9 +228,37 @@ def apply_human_review_to_analysis(
     if not rejected_labels:
         return analysis
 
+    detections = getattr(analysis, "detections", None)
+    if not detections:
+        new_counts = dict(getattr(analysis, "counts_by_label", {}) or {})
+        for label in rejected_labels:
+            if label in new_counts:
+                new_counts[label] = 0
+
+        new_v_weapon = new_counts.get("weapon", 0) + new_counts.get("knife", 0)
+        new_c_weapon = new_counts.get("candidate_weapon", 0)
+        has_threat = bool(getattr(analysis, "has_threat", False) and new_v_weapon > 0)
+        try:
+            from dataclasses import replace
+            return replace(
+                analysis,
+                counts_by_label=new_counts,
+                has_threat=has_threat,
+                verified_weapon_count=new_v_weapon,
+                candidate_weapon_count=new_c_weapon,
+                weapon_count=new_v_weapon,
+            )
+        except Exception:
+            analysis.counts_by_label = new_counts
+            analysis.has_threat = has_threat
+            analysis.verified_weapon_count = new_v_weapon
+            analysis.candidate_weapon_count = new_c_weapon
+            analysis.weapon_count = new_v_weapon
+            return analysis
+
     new_detections = []
     removed_by_label: dict[str, int] = {}
-    for d in analysis.detections:
+    for d in detections:
         label = getattr(d, "label", "")
         key = f"{label}@{getattr(d, 'confidence', 0.0):.2f}"
         decision = human_decisions.get(key)
