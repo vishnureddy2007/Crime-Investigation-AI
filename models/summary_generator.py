@@ -200,7 +200,12 @@ class SummaryGenerator:
         except (requests.RequestException, Exception):
             return False
 
-    def generate(self, analysis: EvidenceAnalysis) -> DetailedNarrativeSummary:
+    def generate(
+        self,
+        analysis: EvidenceAnalysis,
+        human_decisions: dict[str, str] | None = None,
+        user_review_overrides: dict[str, str] | None = None,
+    ) -> DetailedNarrativeSummary:
         """
         Generate a DetailedNarrativeSummary.
         Tries to use AI to rewrite the template into a professional report.
@@ -210,11 +215,17 @@ class SummaryGenerator:
         t0 = time.perf_counter()
         template = build_template_summary(analysis)
 
+        decisions = human_decisions or user_review_overrides
+
         if not self.is_available():
             profile_stage("qwen3_summary_generation", time.perf_counter() - t0, "Ollama Offline - Fallback Used")
             return template
 
         try:
+            from core.profiler import record_ai_call
+            version_hash = calculate_analysis_hash(analysis, decisions)
+            record_ai_call(version_hash)
+
             prompt = self._build_prompt(template, analysis)
             payload = {
                 "model": self.model_name,

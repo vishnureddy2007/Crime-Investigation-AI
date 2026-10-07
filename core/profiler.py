@@ -127,3 +127,66 @@ def profile_stage(name: str, duration_sec: float, details: str = "") -> StageMet
 def get_performance_report() -> str:
     """Return a formatted performance report string."""
     return PipelineProfiler.get_instance().format_log_report()
+
+
+class AICallRegistry:
+    """Registry tracking Qwen3 14B call count per evidence version."""
+
+    _instance: AICallRegistry | None = None
+
+    def __init__(self) -> None:
+        self.call_counts: dict[str, int] = {}
+        self.last_call_times: dict[str, str] = {}
+        self._locks: set[str] = set()
+
+    @classmethod
+    def get_instance(cls) -> AICallRegistry:
+        if cls._instance is None:
+            cls._instance = AICallRegistry()
+        return cls._instance
+
+    def record_call(self, version_hash: str) -> int:
+        count = self.call_counts.get(version_hash, 0) + 1
+        self.call_counts[version_hash] = count
+        self.last_call_times[version_hash] = datetime.now().isoformat()
+        if count > 1:
+            try:
+                from core.logging import get_logger
+                get_logger(__name__).warning(
+                    "WARNING: Duplicate Qwen analysis detected for evidence version %s (Call #%d)",
+                    version_hash[:12], count
+                )
+            except (AttributeError, ImportError):
+                pass
+        return count
+
+    def get_call_count(self, version_hash: str) -> int:
+        return self.call_counts.get(version_hash, 0)
+
+    def is_locked(self, version_hash: str) -> bool:
+        return version_hash in self._locks
+
+    def acquire_lock(self, version_hash: str) -> bool:
+        if version_hash in self._locks:
+            return False
+        self._locks.add(version_hash)
+        return True
+
+    def release_lock(self, version_hash: str) -> None:
+        self._locks.discard(version_hash)
+
+    def reset(self) -> None:
+        self.call_counts.clear()
+        self.last_call_times.clear()
+        self._locks.clear()
+
+
+def record_ai_call(version_hash: str) -> int:
+    """Record an AI call for the specified evidence version hash."""
+    return AICallRegistry.get_instance().record_call(version_hash)
+
+
+def get_ai_call_count(version_hash: str) -> int:
+    """Get total AI calls made for the specified evidence version hash."""
+    return AICallRegistry.get_instance().get_call_count(version_hash)
+

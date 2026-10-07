@@ -140,8 +140,25 @@ class DetailedNarrativeSummary:
     potential_crime_activity: str
     important_evidence: str
     uncertainties: str
-    investigation_summary: str
+    investigation_summary: str = ""
     summary_id: str = "sum_001"
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "case_id": self.case_id,
+            "case_overview": self.case_overview,
+            "evidence_reviewed": self.evidence_reviewed,
+            "chronological_events": self.chronological_events,
+            "detected_objects": self.detected_objects,
+            "verified_findings": self.verified_findings,
+            "possible_findings": self.possible_findings,
+            "rejected_findings": self.rejected_findings,
+            "potential_crime_activity": self.potential_crime_activity,
+            "important_evidence": self.important_evidence,
+            "uncertainties": self.uncertainties,
+            "investigation_summary": self.investigation_summary,
+            "summary_id": self.summary_id,
+        }
 
 
 @dataclass
