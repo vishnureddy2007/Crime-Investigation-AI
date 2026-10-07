@@ -1,0 +1,52 @@
+# docker-compose.yml — single-service production stack.
+#
+# Usage:
+#   docker compose up --build
+#   # Visit http://localhost:8501
+#
+# Or for a detached run with a `.env` file:
+#   docker compose --env-file .env up -d
+#
+# The compose file keeps the surface area tiny: one service, one
+# healthcheck, one volume for `outputs/` so generated reports and
+# storyboards survive container restarts.
+
+services:
+  app:
+    build: .
+    image: crime-investigation-ai:latest
+    container_name: crime-ai
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-8501}:8501"
+    environment:
+      APP_PORT: "8501"
+      APP_ADDRESS: "0.0.0.0"
+      APP_HEADLESS: "true"
+      APP_THEME: "${APP_THEME:-light}"
+      HF_HOME: "/app/.cache/huggingface"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      LOG_FILE: "/app/logs/app.log"
+    volumes:
+      # Persist generated reports, keyframes, storyboards, and logs.
+      - crime-ai-outputs:/app/outputs
+      - crime-ai-logs:/app/logs
+      # Persist the SQLite DB so the case history survives restarts.
+      - crime-ai-db:/app/database
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8501/_stcore/health', timeout=3).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  crime-ai-outputs:
+  crime-ai-logs:
+  crime-ai-db:

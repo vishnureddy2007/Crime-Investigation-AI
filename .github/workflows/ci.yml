@@ -1,0 +1,176 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run project audit (pre-test gate)
+        # scripts/audit.py codifies the four-pattern sweep performed
+        # by hand across Phases 16-26 (label drift, dead code, path
+        # safety, deprecated APIs, logging hygiene, SQL safety).
+        # Fails the job if any of the patterns regress.
+        run: python scripts/audit.py --json
+
+      - name: Upload audit report artifact
+        # Always uploads even on a clean run so reviewers can diff
+        # AUDIT.json between pushes. Retained for 14 days.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-report
+          path: AUDIT.json
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Run tests + coverage (terminal)
+        run: |
+          pytest \
+            --cov=app --cov=core --cov=services \
+            --cov=models --cov=utils --cov=database --cov=config \
+            --cov=pages \
+            --cov-report=term-missing
+
+  docker-build:
+    # Smoke-test the production Docker image on every push to main.
+    # Skipped for pull_request so contributors see fast PR feedback.
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: crime-investigation-ai:ci-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run container
+        run: |
+          docker run -d --name crime-ai-ci -p 8501:8501 \
+            crime-investigation-ai:ci-${{ github.sha }}
+          echo "Waiting for Streamlit to start ..."
+          for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+            sleep 2
+            if curl -fsS http://localhost:8501/_stcore/health >/dev/null 2>&1; then
+              echo "Streamlit is up after ${i}x2 seconds."
+              break
+            fi
+          done
+
+      - name: Hit healthcheck
+        run: |
+          status=$(curl -sS -o /tmp/health.txt -w "%{http_code}" \
+            http://localhost:8501/_stcore/health)
+          echo "HTTP ${status}"
+          echo "Body:"
+          cat /tmp/health.txt
+          test "${status}" = "200"
+          test -s /tmp/health.txt
+
+      - name: Stop container
+        if: always()
+        run: docker rm -f crime-ai-ci || true
+
+      - name: Smoke-import the built image
+        run: |
+          docker run --rm crime-investigation-ai:ci-${{ github.sha }} \
+            python scripts/smoke_app.py
+
+  pr-audit-diff:
+    # Phase 32 — on every PR, capture the base branch's AUDIT.json,
+    # capture this PR's AUDIT.json, and run --diff to surface any
+    # regressions introduced. Skipped for direct pushes (the base
+    # branch comparison is meaningless on a push to main).
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Capture base branch AUDIT.json
+        # Check out the PR's base ref (usually `main`) and run the
+        # audit to capture the canonical clean baseline.
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          path: base
+          fetch-depth: 1
+
+      - name: Run audit on base branch
+        working-directory: base
+        run: python scripts/audit.py --json
+
+      - name: Capture PR head AUDIT.json
+        # Now check out the PR head and run the audit there.
+        uses: actions/checkout@v4
+        with:
+          path: head
+          fetch-depth: 1
+
+      - name: Run audit on PR head
+        working-directory: head
+        run: python scripts/audit.py --json
+
+      - name: Run --diff between base and head
+        # Exit 0 = no new findings (PR is clean).
+        # Exit 1 = new findings introduced (PR fails this job).
+        # Exit 2 = config error (file not found / schema mismatch).
+        run: |
+          echo "::group::audit diff (base ${{ github.event.pull_request.base.ref }} -> head ${{ github.event.pull_request.head.sha }})"
+          python scripts/audit.py --diff base/AUDIT.json head/AUDIT.json
+          echo "::endgroup::"
+
+      - name: Upload diff report artifact
+        # Always uploads the rendered diff so reviewers can see what
+        # changed without re-running the job. 14-day retention.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-diff
+          path: |
+            base/AUDIT.json
+            head/AUDIT.json
+          retention-days: 14
+          if-no-files-found: warn

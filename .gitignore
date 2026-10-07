@@ -1,0 +1,62 @@
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+build/
+dist/
+
+# ---------- Virtual envs ----------
+venv/
+env/
+ENV/
+.venv/
+
+# ---------- IDE ----------
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ---------- OS ----------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------- Streamlit ----------
+.streamlit/secrets.toml
+
+# ---------- Environment ----------
+.env
+.env.local
+
+# ---------- Models & weights ----------
+models/*.pt
+models/*.onnx
+models/*.weights
+models/yolo*/
+
+# ---------- Generated outputs ----------
+outputs/reports/*.pdf
+outputs/reports/*.docx
+outputs/videos/*.mp4
+outputs/storyboard/*.png
+outputs/storyboard/*.jpg
+outputs/storyboard/*.jpeg
+
+# ---------- Logs ----------
+*.log
+logs/
+
+# ---------- Tests / coverage ----------
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ---------- Database ----------
+database/*.db
+database/*.sqlite
+database/*.sqlite3

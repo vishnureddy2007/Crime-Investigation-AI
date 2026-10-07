@@ -1,0 +1,33 @@
+# ---------- Web framework ----------
+streamlit>=1.32.0
+
+# ---------- Computer Vision ----------
+opencv-python>=4.9.0
+Pillow>=10.2.0
+
+# ---------- Object Detection (Milestone 2+) ----------
+ultralytics>=8.1.0
+
+# ---------- NLP / Transformers (Milestone 5+) ----------
+transformers>=4.38.0
+torch>=2.1.0
+
+# ---------- Data handling ----------
+numpy>=1.26.0
+pandas>=2.1.0
+plotly>=5.18.0
+
+
+# ---------- Reports (Milestone 6+) ----------
+python-docx>=1.1.0
+reportlab>=4.1.0
+
+# ---------- Optional AI extras (Phase 13) ----------
+# pytesseract enables the OCR helper when Tesseract is also installed
+# on the host. The fallback path is a deterministic stub, so this is
+# not required at runtime.
+pytesseract>=0.3.10 ; platform_machine != "arm64" or sys_platform == "darwin"
+
+# ---------- Testing ----------
+pytest>=8.0.0
+plotly

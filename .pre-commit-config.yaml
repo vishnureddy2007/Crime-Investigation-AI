@@ -1,0 +1,31 @@
+# Pre-commit hook configuration for Crime-Investigation-AI.
+#
+# Pre-commit runs configured hooks locally on `git commit` so that
+# regressions in any of the audit-script patterns fail BEFORE the
+# commit lands and BEFORE CI runs. Install once with:
+#
+#     pip install pre-commit
+#     pre-commit install
+#
+# Then `git commit` will run `python scripts/audit.py` automatically.
+# If the audit reports findings, the commit is blocked until you fix
+# them or update the audit's `allow_in_files` exemption list.
+#
+# The hook is identical to the CI pre-test gate in
+# `.github/workflows/ci.yml` — same script, same exit code, same
+# patterns. See `CONTRIBUTING.md` for how to add a new pattern.
+
+repos:
+  - repo: local
+    hooks:
+      - id: project-audit
+        name: Project audit (scripts/audit.py)
+        entry: python scripts/audit.py
+        language: system
+        pass_filenames: false
+        # Run on every commit regardless of which files were staged —
+        # the audit scans the whole `app/ core/ database/ models/
+        # pages/ services/ utils/` tree, so a partial view would
+        # produce false negatives.
+        always_run: true
+        stages: [pre-commit]
