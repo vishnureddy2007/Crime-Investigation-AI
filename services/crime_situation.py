@@ -80,7 +80,7 @@ class CrimeSituationAnalyzer:
             response = requests.post(
                 f"{OLLAMA_BASE_URL}/api/generate",
                 json=payload,
-                timeout=35.0,
+                timeout=120.0,
             )
             response.raise_for_status()
             result = response.json()
