@@ -216,6 +216,11 @@ class ChatAssistant:
                 model_name="template-only",
             )
 
+        # Check if question requires LLM reasoning or can be answered deterministically
+        if not self._is_reasoning_question(question):
+            profile_stage("chat_assistant_reply", time.perf_counter() - t0, "Direct Python Answer (No LLM Call)")
+            return _fallback_reply(question, active_analysis)
+
         prompt = self._build_prompt(question, active_analysis, human_decisions)
         try:
             payload = {
@@ -250,6 +255,17 @@ class ChatAssistant:
             profile_stage("chat_assistant_reply", time.perf_counter() - t0, f"Fallback Used ({exc})")
 
         return _fallback_reply(question, active_analysis)
+
+    @staticmethod
+    def _is_reasoning_question(question: str) -> bool:
+        """Return True if question requires LLM reasoning; False if simple count/status query."""
+        q = (question or "").strip().lower()
+        simple_factual_patterns = (
+            "how many", "count", "severity score", "status", "rejected count", "verified count"
+        )
+        if any(p in q for p in simple_factual_patterns):
+            return False
+        return True
 
     @staticmethod
     def _build_prompt(question: str, analysis: EvidenceAnalysis, human_decisions: dict[str, str] | None = None) -> str:

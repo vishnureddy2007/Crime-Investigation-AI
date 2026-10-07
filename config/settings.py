@@ -248,7 +248,17 @@ SUMMARY_MODEL_NAME: str = OLLAMA_MODEL
 SUMMARY_MAX_LENGTH: int = 180
 SUMMARY_MIN_LENGTH: int = 40
 SUMMARY_MAX_NEW_TOKENS: int = 120
-SUMMARY_GENERATION_TIMEOUT_SEC: float = 30.0
+SUMMARY_GENERATION_TIMEOUT_SEC: float = 12.0
+
+AI_CONFIG: dict[str, Any] = {
+    "model": OLLAMA_MODEL,
+    "base_url": OLLAMA_BASE_URL,
+    "max_output_tokens": 200,
+    "temperature": 0.2,
+    "timeout": 12.0,
+    "keep_alive": "1h",
+    "chat_history_limit": 5,
+}
 
 # ------------------------------------------------------------------
 # Report generation (Milestone 6+)
