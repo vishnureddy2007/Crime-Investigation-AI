@@ -60,13 +60,41 @@ def _get_base_image():
     return None
 
 
+def _get_demo_analysis() -> EvidenceAnalysis:
+    """Create a rich demo EvidenceAnalysis for instant AI Insights exploration."""
+    from models.schemas import DetectionBox
+    return EvidenceAnalysis(
+        source_name="Demo_Armed_Robbery_Scene.jpg",
+        media_type="image",
+        total_objects=5,
+        person_count=2,
+        weapon_count=1,
+        candidate_weapon_count=1,
+        vehicle_count=1,
+        bag_count=1,
+        has_threat=True,
+        severity_score=85.0,
+        severity_level="critical",
+        suggested_category="armed_robbery",
+        average_confidence=0.88,
+        boxes=[
+            DetectionBox(class_name="person", confidence=0.92, bbox=[100, 150, 300, 500]),
+            DetectionBox(class_name="person", confidence=0.89, bbox=[350, 180, 550, 480]),
+            DetectionBox(class_name="handgun", confidence=0.91, bbox=[280, 220, 340, 270]),
+            DetectionBox(class_name="knife", confidence=0.52, bbox=[400, 300, 430, 340]),
+            DetectionBox(class_name="car", confidence=0.86, bbox=[600, 200, 900, 450]),
+        ],
+        raw_detection_count=5,
+    )
+
+
 def _render_summary_tab(analysis: EvidenceAnalysis | None) -> None:
     """Tab 1: Unified Investigation Intelligence Report."""
     st.markdown("### 📑 Investigation Intelligence Report")
     st.caption("Combines formal forensic narratives with predictive situational analysis for a comprehensive case overview.")
 
     if analysis is None:
-        st.warning("No active evidence analysis available. Process evidence in the Investigation workspace first.")
+        st.warning("No active evidence analysis available. Load demo evidence above or process evidence in the Investigation workspace.")
         return
 
     human_decisions = st.session_state.get("human_decisions", {})
@@ -78,15 +106,18 @@ def _render_summary_tab(analysis: EvidenceAnalysis | None) -> None:
 
     stored_hash = st.session_state.get("ai_analysis_hash")
     is_outdated = (stored_hash is not None and stored_hash != current_hash)
+    has_existing = st.session_state.get(SessionKeys.LAST_SUMMARY) is not None
 
     if is_outdated:
         st.warning("⚠️ AI analysis is OUTDATED. Verified evidence or human review decisions changed since this report was generated. Please regenerate.")
 
-    btn_label = "Regenerate AI Intelligence Report" if is_outdated else "Generate Full Intelligence Report"
-    has_existing = st.session_state.get(SessionKeys.LAST_SUMMARY) is not None
-
+    # Auto-generate on first visit if no summary exists yet
     if not has_existing or is_outdated:
-        if st.button(btn_label, type="primary", use_container_width=True):
+        should_generate = not has_existing
+        if is_outdated:
+            should_generate = st.button("Regenerate AI Intelligence Report", type="primary", use_container_width=True)
+        
+        if should_generate:
             with st.spinner("🧠 Qwen3 14B (Local AI) is synthesizing narrative and predicting situational patterns..."):
                 gen = SummaryGenerator()
                 summary_obj = gen.generate(analysis)
@@ -96,7 +127,8 @@ def _render_summary_tab(analysis: EvidenceAnalysis | None) -> None:
                 situation = sit_analyzer.analyze(analysis, summary_text=summary_obj.investigation_summary)
                 st.session_state["last_situation_analysis"] = situation
                 st.session_state["ai_analysis_hash"] = current_hash
-                st.rerun()
+                if is_outdated:
+                    st.rerun()
 
     summary = st.session_state.get(SessionKeys.LAST_SUMMARY)
     situation = st.session_state.get("last_situation_analysis")
@@ -431,6 +463,25 @@ def render() -> None:
         st.markdown("**Pipeline Performance Profile (Live Measurements):**")
         from core.profiler import get_performance_report
         st.code(get_performance_report(), language="text")
+
+    analysis = resolve_active_analysis()
+
+    if analysis is None:
+        with st.container(border=True):
+            st.info("ℹ️ **No Active Evidence Analysis Found in Session**")
+            st.markdown(
+                "To generate AI Insights, narrative summaries, and timeline breakdowns, process evidence in the **Investigation** workspace, "
+                "or load a sample demo case below to explore the AI features immediately."
+            )
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("⚡ Load Demo Crime Case", type="primary", use_container_width=True):
+                    st.session_state[SessionKeys.LAST_ANALYSIS] = _get_demo_analysis()
+                    st.rerun()
+            with c2:
+                if st.button("🔍 Open Investigation Workspace", use_container_width=True):
+                    st.session_state["nav_selection"] = "Investigation"
+                    st.rerun()
 
     analysis = resolve_active_analysis()
 
