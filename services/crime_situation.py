@@ -80,7 +80,7 @@ class CrimeSituationAnalyzer:
             response = requests.post(
                 f"{OLLAMA_BASE_URL}/api/generate",
                 json=payload,
-                timeout=12.0,
+                timeout=35.0,
             )
             response.raise_for_status()
             result = response.json()
@@ -118,14 +118,14 @@ class CrimeSituationAnalyzer:
     def _fallback_analysis(self, analysis: EvidenceAnalysis) -> CrimeSituationAnalysis:
         """Deterministic fallback when AI is unavailable."""
         return CrimeSituationAnalysis(
-            likely_activity_pattern="Unable to analyze pattern (AI Unavailable).",
+            likely_activity_pattern="AI Analysis Unavailable",
             possible_sequence_of_events="Sequential evidence review required.",
             potential_next_activity="Human verification of detected objects.",
-            suspicious_behavior_indicators=["See detected objects"],
-            risk_indicators=[f"Severity: {analysis.severity_level}"],
-            supporting_evidence=[f"Verified weapons: {analysis.weapon_count}"],
-            confidence_level="Low",
-            uncertainties="AI service unreachable.",
+            suspicious_behavior_indicators=["Deterministic analysis based on detected objects"],
+            risk_indicators=[f"Severity Level: {analysis.severity_level.upper()} ({analysis.severity_score}/100)"],
+            supporting_evidence=[f"Verified weapons: {analysis.weapon_count}", f"Persons detected: {analysis.person_count}"],
+            confidence_level="Deterministic Fallback",
+            uncertainties="AI model unreachable or timing out during cold load.",
             alternative_explanations="Manual review of raw footage.",
         )
 
