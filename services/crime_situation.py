@@ -43,11 +43,22 @@ class CrimeSituationAnalyzer:
 
     def analyze(self, analysis: EvidenceAnalysis, summary_text: str | None = None) -> CrimeSituationAnalysis:
         """
-        Perform a situation analysis on the provided evidence.
+        Perform a situation analysis on the provided evidence. Reuses cached analysis if present.
         """
         import time
         from core.profiler import profile_stage
         t0 = time.perf_counter()
+
+        try:
+            import streamlit as st
+            from streamlit.runtime.scriptrunner import get_script_run_ctx
+            if get_script_run_ctx() is not None:
+                existing = st.session_state.get("last_situation_analysis")
+                if existing is not None and hasattr(existing, "likely_activity_pattern"):
+                    profile_stage("qwen3_situation_analysis", time.perf_counter() - t0, "Reused Single-Pass Cached Result")
+                    return existing
+        except (AttributeError, KeyError, TypeError, ValueError):
+            pass
 
         if not self.is_available():
             profile_stage("qwen3_situation_analysis", time.perf_counter() - t0, "Ollama Offline - Fallback Used")
@@ -60,6 +71,7 @@ class CrimeSituationAnalyzer:
                 "prompt": prompt,
                 "stream": False,
                 "format": "json",
+                "keep_alive": "1h",
                 "options": {
                     "num_predict": 300,
                     "temperature": 0.2,
@@ -68,7 +80,7 @@ class CrimeSituationAnalyzer:
             response = requests.post(
                 f"{OLLAMA_BASE_URL}/api/generate",
                 json=payload,
-                timeout=35.0,
+                timeout=12.0,
             )
             response.raise_for_status()
             result = response.json()

@@ -111,13 +111,12 @@ def _render_summary_tab(analysis: EvidenceAnalysis | None) -> None:
     if is_outdated:
         st.warning("⚠️ AI analysis is OUTDATED. Verified evidence or human review decisions changed since this report was generated. Please regenerate.")
 
-    # Auto-generate on first visit if no summary exists yet
+    btn_label = "🔄 Regenerate AI Intelligence Report" if is_outdated else "🧠 Generate Full Intelligence Report"
+    
     if not has_existing or is_outdated:
-        should_generate = not has_existing
-        if is_outdated:
-            should_generate = st.button("Regenerate AI Intelligence Report", type="primary", use_container_width=True)
-        
-        if should_generate:
+        if not has_existing:
+            st.info("ℹ️ No AI Intelligence Report has been generated yet for this active evidence.")
+        if st.button(btn_label, type="primary", use_container_width=True):
             with st.spinner("🧠 Qwen3 14B (Local AI) is synthesizing narrative and predicting situational patterns..."):
                 gen = SummaryGenerator()
                 summary_obj = gen.generate(analysis)
@@ -127,8 +126,7 @@ def _render_summary_tab(analysis: EvidenceAnalysis | None) -> None:
                 situation = sit_analyzer.analyze(analysis, summary_text=summary_obj.investigation_summary)
                 st.session_state["last_situation_analysis"] = situation
                 st.session_state["ai_analysis_hash"] = current_hash
-                if is_outdated:
-                    st.rerun()
+                st.rerun()
 
     summary = st.session_state.get(SessionKeys.LAST_SUMMARY)
     situation = st.session_state.get("last_situation_analysis")

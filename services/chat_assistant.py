@@ -222,15 +222,16 @@ class ChatAssistant:
                 "model": self.model_name,
                 "prompt": prompt,
                 "stream": False,
+                "keep_alive": "1h",
                 "options": {
-                    "num_predict": 250,
+                    "num_predict": 200,
                     "temperature": 0.2,
                 }
             }
             response = requests.post(
                 f"{OLLAMA_BASE_URL}/api/generate",
                 json=payload,
-                timeout=25.0,
+                timeout=12.0,
             )
             response.raise_for_status()
             result = response.json()

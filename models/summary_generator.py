@@ -221,15 +221,16 @@ class SummaryGenerator:
                 "prompt": prompt,
                 "stream": False,
                 "format": "json",
+                "keep_alive": "1h",
                 "options": {
-                    "num_predict": self.max_new_tokens,
+                    "num_predict": 450,
                     "temperature": 0.2,
                 }
             }
             response = requests.post(
                 f"{OLLAMA_BASE_URL}/api/generate",
                 json=payload,
-                timeout=35.0,
+                timeout=12.0,
             )
             response.raise_for_status()
             result = response.json()
@@ -251,6 +252,29 @@ class SummaryGenerator:
 
             profile_stage("qwen3_summary_generation", time.perf_counter() - t0, f"Qwen3 14B Success ({len(raw_json)} chars)")
 
+            # Extract optional single-pass situation analysis if generated
+            sit_data = data.get("situation_analysis")
+            if sit_data and isinstance(sit_data, dict):
+                try:
+                    from models.schemas import CrimeSituationAnalysis
+                    sit_obj = CrimeSituationAnalysis(
+                        likely_activity_pattern=sit_data.get("likely_activity_pattern", "Likely suspicious movement."),
+                        possible_sequence_of_events=sit_data.get("possible_sequence_of_events", "Sequence under investigation."),
+                        potential_next_activity=sit_data.get("potential_next_activity", "Verification required."),
+                        suspicious_behavior_indicators=sit_data.get("suspicious_behavior_indicators", [f"{analysis.weapon_count} weapon(s) detected"]),
+                        risk_indicators=sit_data.get("risk_indicators", [f"Severity level {analysis.severity_level}"]),
+                        supporting_evidence=sit_data.get("supporting_evidence", [f"Source: {analysis.source_name}"]),
+                        confidence_level=sit_data.get("confidence_level", "Medium"),
+                        uncertainties=sit_data.get("uncertainties", "None reported"),
+                        alternative_explanations=sit_data.get("alternative_explanations", "Standard workflow"),
+                    )
+                    import streamlit as st
+                    from streamlit.runtime.scriptrunner import get_script_run_ctx
+                    if get_script_run_ctx() is not None:
+                        st.session_state["last_situation_analysis"] = sit_obj
+                except (AttributeError, KeyError, TypeError, ValueError):
+                    pass
+
             return DetailedNarrativeSummary(
                 case_id=template.case_id,
                 case_overview=data.get("case_overview", template.case_overview),
@@ -271,11 +295,11 @@ class SummaryGenerator:
 
     def _build_prompt(self, template: DetailedNarrativeSummary, analysis: EvidenceAnalysis) -> str:
         """
-        Build a concise prompt to rewrite the template into a professional report.
+        Build a concise prompt to rewrite the template into a professional report and situation prediction.
         """
         return (
             "You are a senior forensic investigator. Rewrite the following factual "
-            "investigation points into a professional, formal narrative summary. "
+            "investigation points into a professional, formal narrative summary and situation prediction. "
             "Keep the tone clinical and objective. Do NOT invent any new facts, "
             "people, timestamps, or locations. Use ONLY the provided information.\n\n"
             f"FACTS:\n"
@@ -286,8 +310,10 @@ class SummaryGenerator:
             f"- Verified: {template.verified_findings}\n"
             f"- Possible: {template.possible_findings}\n"
             f"- Summary: {template.investigation_summary}\n\n"
-            "Return the result as a JSON object with the following keys: "
+            "Return the result as a JSON object with keys: "
             "case_overview, evidence_reviewed, chronological_events, detected_objects, "
             "verified_findings, possible_findings, rejected_findings, potential_crime_activity, "
-            "important_evidence, uncertainties, investigation_summary."
+            "important_evidence, uncertainties, investigation_summary, and situation_analysis "
+            "(containing likely_activity_pattern, possible_sequence_of_events, potential_next_activity, "
+            "suspicious_behavior_indicators, risk_indicators, supporting_evidence, confidence_level, uncertainties)."
         )
