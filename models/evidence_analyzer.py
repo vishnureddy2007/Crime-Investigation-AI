@@ -37,9 +37,9 @@ def analyze(input_data: AnalysisInput) -> EvidenceAnalysis:
 
     # The mapping layer in yolo_detector emits `weapon` for verified
     # weapon-class detections (COCO `knife` OR weapon-model output)
-    # and `candidate_weapon` for low-confidence / not-yet-verified
-    # candidates. The analyzer trusts those buckets directly.
-    verified_weapon_count = counts.get("weapon", 0) + counts.get("knife", 0)
+    # and weapon class synonyms (revolver, gun, pistol, etc.).
+    _WEAPON_CLASSES = {"weapon", "knife", "revolver", "Revolver", "shotgun", "Shotgun", "gun", "Gun", "pistol", "Pistol", "rifle", "Rifle", "handgun", "Handgun", "firearm", "Firearm", "grenade", "Grenade"}
+    verified_weapon_count = sum(counts.get(k, 0) for k in _WEAPON_CLASSES)
     candidate_weapon_count = counts.get("candidate_weapon", 0)
     # Back-compat alias (downstream code reads `weapon_count`).
     weapon_count = verified_weapon_count

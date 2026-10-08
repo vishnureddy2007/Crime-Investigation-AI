@@ -152,7 +152,11 @@ YOLO_CLASS_MAPPING: dict[str, str] = {
 
 # Classes we consider "weapon candidates" during the first-stage scan.
 # COCO has none beyond `knife`; the dedicated weapon model adds more.
-WEAPON_CANDIDATE_LABELS: set[str] = {"weapon", "knife"}
+WEAPON_CANDIDATE_LABELS: set[str] = {
+    "weapon", "knife", "revolver", "Revolver", "shotgun", "Shotgun",
+    "gun", "Gun", "pistol", "Pistol", "rifle", "Rifle", "handgun", "Handgun",
+    "firearm", "Firearm", "grenade", "Grenade"
+}
 
 # The unified, honest list of "classes we will ever return". The
 # COCO model contributes persons, vehicles, bags, and the weapon
@@ -162,7 +166,9 @@ SUPPORTED_DETECTION_CLASSES: set[str] = {
     "person", "bicycle", "car", "motorcycle", "bus", "truck",
     "backpack", "handbag", "suitcase",
     "knife", "bottle", "baseball bat", "scissors",
-    "gun", "Gun", "pistol", "Pistol", "rifle", "Rifle", "handgun", "Handgun", "firearm", "Firearm", "weapon", "Weapon"
+    "gun", "Gun", "pistol", "Pistol", "rifle", "Rifle", "handgun", "Handgun",
+    "firearm", "Firearm", "revolver", "Revolver", "shotgun", "Shotgun",
+    "weapon", "Weapon", "grenade", "Grenade"
 }
 
 RELEVANT_CLASSES: set[str] = set(YOLO_CLASS_MAPPING.keys())

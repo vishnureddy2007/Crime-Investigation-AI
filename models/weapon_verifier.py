@@ -45,28 +45,109 @@ class WeaponVerification:
 
 
 # Labels the analyzer treats as weapons when present in `counts_by_label`.
-WEAPON_LABELS: frozenset[str] = frozenset({"weapon", "knife"})
+# Labels the analyzer treats as weapons when present in `counts_by_label`.
+WEAPON_LABELS: frozenset[str] = frozenset({
+    "weapon", "knife", "revolver", "Revolver", "shotgun", "Shotgun",
+    "gun", "Gun", "pistol", "Pistol", "rifle", "Rifle", "handgun", "Handgun",
+    "firearm", "Firearm", "grenade", "Grenade", "candidate_weapon"
+})
+
+
+def classify_weapon_detection(
+    label: str,
+    confidence: float,
+    source: str = "general",
+    bbox: Any | None = None,
+    img_width: float | None = None,
+    img_height: float | None = None,
+) -> tuple[str, str]:
+    """
+    Classify a detection into one of: 'WEAPON', 'NOT_WEAPON', 'UNCERTAIN'.
+    Returns tuple of (final_state, post_mapping_label).
+    """
+    if label not in WEAPON_LABELS:
+        return "NOT_WEAPON", label
+
+    target_label = "weapon" if label != "knife" else "knife"
+
+    # Box Quality & Size Validation (Supporting Signals)
+    if bbox is not None and hasattr(bbox, "width") and hasattr(bbox, "height"):
+        bw, bh = bbox.width, bbox.height
+        area = bbox.area if hasattr(bbox, "area") else bw * bh
+        aspect_ratio = (bw / max(1.0, bh)) if bw >= bh else (bh / max(1.0, bw))
+
+        # Extreme artifact box (e.g. 1px line or tiny <16px dot with sub-0.70 confidence)
+        if (bw < 4 or bh < 4 or area < 16.0 or aspect_ratio > 15.0) and confidence < WEAPON_HIGH_CONF_THRESHOLD:
+            return "NOT_WEAPON", target_label
+
+    # High Confidence Shortcut
+    if confidence >= WEAPON_HIGH_CONF_THRESHOLD:
+        return "WEAPON", target_label
+
+    # Credibility Boost for weapon-trained models or temporal tracking
+    source_boost = 0.10 if source in {"weapon", "threat-weapon", "temporal", "weapon-scan"} else 0.0
+    effective_score = confidence + source_boost
+
+    if effective_score >= WEAPON_VERIFY_THRESHOLD:
+        return "WEAPON", target_label
+    elif confidence >= WEAPON_CONF_THRESHOLD:
+        return "UNCERTAIN", target_label
+    else:
+        return "NOT_WEAPON", target_label
+
+
+def separate_detection_states(detections: list) -> dict[str, list]:
+    """
+    Categorize raw detections into separate structured lists:
+      - raw_detections
+      - weapon_candidates
+      - verified_weapons
+      - rejected_detections
+      - uncertain_detections
+    """
+    raw_list = list(detections)
+    candidates = []
+    verified = []
+    rejected = []
+    uncertain = []
+
+    for d in raw_list:
+        label = getattr(d, "label", getattr(d, "class_name", ""))
+        conf = getattr(d, "confidence", 0.0)
+        source = getattr(d, "source", "general")
+        bbox = getattr(d, "bbox", None)
+
+        if label in WEAPON_LABELS or getattr(d, "class_name", "").lower() in WEAPON_LABELS:
+            candidates.append(d)
+            state, target_label = classify_weapon_detection(label, conf, source, bbox)
+
+            if state == "WEAPON":
+                # Ensure weapon_status is 'verified'
+                if hasattr(d, "weapon_status"):
+                    d.weapon_status = "verified"
+                verified.append(d)
+            elif state == "UNCERTAIN":
+                if hasattr(d, "weapon_status"):
+                    d.weapon_status = "candidate"
+                uncertain.append(d)
+            else:
+                if hasattr(d, "weapon_status"):
+                    d.weapon_status = "rejected"
+                rejected.append(d)
+
+    return {
+        "raw_detections": raw_list,
+        "weapon_candidates": candidates,
+        "verified_weapons": verified,
+        "rejected_detections": rejected,
+        "uncertain_detections": uncertain,
+    }
 
 
 def verify_detection(label: str, confidence: float, source: str = "general") -> WeaponVerification:
     """
     Classify a single weapon-class detection.
-
-    Parameters
-    ----------
-    label       : the post-mapping label (e.g. "knife", "weapon", "bottle").
-    confidence  : detection confidence (0.0 - 1.0).
-    source      : which model produced this detection. Dedicated weapon
-                  models (`source="weapon"` or `"threat-weapon"`) and
-                  temporal verification (`source="temporal"`) get a
-                  small credibility boost because they are explicitly
-                  trained or reasoned to detect weapons.
-
-    Returns
-    -------
-    WeaponVerification with `status` in {"verified", "candidate", "non_weapon"}.
     """
-    # Non-weapon labels never enter the weapon pipeline.
     if label not in WEAPON_LABELS:
         return WeaponVerification(
             status="non_weapon",
@@ -75,60 +156,24 @@ def verify_detection(label: str, confidence: float, source: str = "general") -> 
             source=source,
         )
 
-    # High-confidence shortcut — anything above WEAPON_HIGH_CONF_THRESHOLD
-    # is verified regardless of which model produced it. Reduces false
-    # negatives for genuinely obvious weapons without lowering the bar
-    # for ambiguous candidates.
-    if confidence >= WEAPON_HIGH_CONF_THRESHOLD:
-        return WeaponVerification(
-            status="verified",
-            label=label,
-            confidence=confidence,
-            source=source,
-        )
+    state, target_label = classify_weapon_detection(label, confidence, source)
+    if state == "WEAPON":
+        status = "verified"
+    elif state == "UNCERTAIN":
+        status = "candidate"
+    else:
+        status = "non_weapon"
 
-    # Confidence boost for sources that are explicitly weapon-trained.
-    # Dedicated weapon models know what they're looking at; a 0.45
-    # detection from `weapon.pt` is more trustworthy than a 0.45
-    # COCO-knife detection.
-    source_boost = 0.0
-    if source in {"weapon", "threat-weapon", "temporal"}:
-        source_boost = 0.10
-
-    effective = confidence + source_boost
-    if effective >= WEAPON_VERIFY_THRESHOLD:
-        return WeaponVerification(
-            status="verified",
-            label=label,
-            confidence=confidence,
-            source=source,
-        )
-
-    # Below the verify threshold (and below the loose scan threshold):
-    # surface as a candidate for human review only.
-    if confidence >= WEAPON_CONF_THRESHOLD:
-        return WeaponVerification(
-            status="candidate",
-            label="candidate_weapon",
-            confidence=confidence,
-            source=source,
-        )
-
-    # Too low to mention as a weapon candidate either.
     return WeaponVerification(
-        status="non_weapon",
-        label=label,
+        status=status,
+        label=target_label if status == "verified" else label,
         confidence=confidence,
         source=source,
     )
 
 
 def verify_all(detections: list) -> list[WeaponVerification]:
-    """Run `verify_detection` over a list of `Detection`-like objects.
-
-    Accepts any object with `.label`, `.confidence`, `.source`
-    attributes (real `Detection` dataclass satisfies this).
-    """
+    """Run `verify_detection` over a list of `Detection`-like objects."""
     return [
         verify_detection(d.label, d.confidence, getattr(d, "source", "general"))
         for d in detections
@@ -138,7 +183,6 @@ def verify_all(detections: list) -> list[WeaponVerification]:
 def verified_counts(detections: list) -> tuple[int, int]:
     """
     Convenience: return `(verified_weapon_count, candidate_weapon_count)`
-    for a list of detections, after running `verify_all`.
     """
     verified = 0
     candidate = 0
@@ -152,22 +196,28 @@ def verified_counts(detections: list) -> tuple[int, int]:
 
 def apply_to_detections(detections: list) -> list:
     """
-    Mutate a list of `Detection` objects in-place-style: return a NEW
-    list where each Detection has `weapon_status` populated.
-
-    Detections whose label is not a weapon (knife / weapon) keep their
-    original label unchanged. Verified weapons keep `label="weapon"`;
-    candidates get re-labelled to `label="candidate_weapon"` so the
-    analyzer's `counts_by_label` separates the two buckets.
+    Mutate a list of `Detection` objects: return a NEW list with verified weapon labels.
     """
     from models.schemas import Detection  # local import to avoid cycle
 
     out: list[Detection] = []
     for d in detections:
-        v = verify_detection(d.label, d.confidence, getattr(d, "source", "general"))
+        state, target_label = classify_weapon_detection(
+            d.label, d.confidence, getattr(d, "source", "general"), d.bbox
+        )
         new_label = d.label
-        if v.status == "candidate":
-            new_label = "candidate_weapon"
+        status = "non_weapon"
+
+        if d.label in WEAPON_LABELS or d.class_name.lower() in WEAPON_LABELS:
+            if state == "WEAPON":
+                new_label = "weapon" if d.label != "knife" else "knife"
+                status = "verified"
+            elif state == "UNCERTAIN":
+                new_label = "candidate_weapon"
+                status = "candidate"
+            else:
+                status = "rejected"
+
         out.append(
             Detection(
                 class_name=d.class_name,
@@ -175,7 +225,7 @@ def apply_to_detections(detections: list) -> list:
                 confidence=d.confidence,
                 bbox=d.bbox,
                 source=d.source,
-                weapon_status=v.status,
+                weapon_status=status,
             )
         )
     return out
@@ -248,7 +298,9 @@ def apply_human_review_to_analysis(
                 candidate_weapon_count=new_c_weapon,
                 weapon_count=new_v_weapon,
             )
-        except Exception:
+        except (TypeError, ValueError, AttributeError) as exc:
+            from core.logging import get_logger
+            get_logger(__name__).warning("dataclasses.replace failed: %s", exc)
             analysis.counts_by_label = new_counts
             analysis.has_threat = has_threat
             analysis.verified_weapon_count = new_v_weapon

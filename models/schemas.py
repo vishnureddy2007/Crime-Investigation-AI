@@ -58,6 +58,11 @@ class DetectionResult:
     model_name: str = "yolov8n"
     source_tag: str = "general"
     models_used: list[str] = field(default_factory=list)
+    raw_detections: list[Detection] = field(default_factory=list)
+    weapon_candidates: list[Detection] = field(default_factory=list)
+    verified_weapons: list[Detection] = field(default_factory=list)
+    rejected_detections: list[Detection] = field(default_factory=list)
+    uncertain_detections: list[Detection] = field(default_factory=list)
 
     @property
     def count(self) -> int:
@@ -162,6 +167,54 @@ class DetailedNarrativeSummary:
 
 
 @dataclass
+class UnifiedAIAnalysis:
+    source: str = "local_evidence_engine"  # "qwen3_14b" | "local_evidence_engine"
+    case_id: str = "case_001"
+    evidence_version: int = 1
+    case_summary: str = ""
+    investigation_narrative: str = ""
+    situation_analysis: str = ""
+    likely_activity_pattern: str = ""
+    predicted_summary: str = ""
+    possible_sequence_of_events: list[str] = field(default_factory=list)
+    potential_next_activity: str = ""
+    suspicious_indicators: list[str] = field(default_factory=list)
+    risk_indicators: list[str] = field(default_factory=list)
+    risk_level: str = "LOW"
+    confidence_level: str = "High"
+    important_evidence: list[str] = field(default_factory=list)
+    uncertainties: list[str] = field(default_factory=list)
+    limitations: list[str] = field(default_factory=list)
+    animation_scene_description: str = ""
+    animation_events: list[dict[str, Any]] = field(default_factory=list)
+    timestamp: datetime = field(default_factory=datetime.now)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "source": self.source,
+            "case_id": self.case_id,
+            "evidence_version": self.evidence_version,
+            "case_summary": self.case_summary,
+            "investigation_narrative": self.investigation_narrative,
+            "situation_analysis": self.situation_analysis,
+            "likely_activity_pattern": self.likely_activity_pattern,
+            "predicted_summary": self.predicted_summary,
+            "possible_sequence_of_events": self.possible_sequence_of_events,
+            "potential_next_activity": self.potential_next_activity,
+            "suspicious_indicators": self.suspicious_indicators,
+            "risk_indicators": self.risk_indicators,
+            "risk_level": self.risk_level,
+            "confidence_level": self.confidence_level,
+            "important_evidence": self.important_evidence,
+            "uncertainties": self.uncertainties,
+            "limitations": self.limitations,
+            "animation_scene_description": self.animation_scene_description,
+            "animation_events": self.animation_events,
+            "timestamp": self.timestamp.isoformat() if isinstance(self.timestamp, datetime) else str(self.timestamp),
+        }
+
+
+@dataclass
 class CrimeSituationAnalysis:
     likely_activity_pattern: str
     possible_sequence_of_events: str
@@ -172,6 +225,7 @@ class CrimeSituationAnalysis:
     confidence_level: str
     uncertainties: str
     alternative_explanations: str
+    source: str = "local_evidence_engine"
 
     def as_dict(self):
         return self.__dict__

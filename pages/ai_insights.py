@@ -131,6 +131,12 @@ def _render_summary_tab(analysis: EvidenceAnalysis | None) -> None:
     summary = st.session_state.get(SessionKeys.LAST_SUMMARY)
     situation = st.session_state.get("last_situation_analysis")
 
+    # Guaranteed Immediate Local Prediction if no situation exists yet
+    if situation is None and analysis is not None:
+        sit_analyzer = CrimeSituationAnalyzer()
+        situation = sit_analyzer.analyze(analysis)
+        st.session_state["last_situation_analysis"] = situation
+
     if summary:
         if not is_outdated:
             st.success("✓ Intelligence Report Ready (Cached for Active Evidence State)")
@@ -158,22 +164,28 @@ def _render_summary_tab(analysis: EvidenceAnalysis | None) -> None:
     if situation:
         with st.container(border=True):
             st.markdown("#### 🔮 Predictive Situation Analysis")
+            source_tag = getattr(situation, "source", "local_evidence_engine")
+            source_display = "Qwen3 14B" if source_tag == "qwen3_14b" else "Local Evidence Engine"
+            st.markdown(f"**Prediction Source:** `{source_display}`")
             st.markdown(f"**Likely Activity Pattern:** {situation.likely_activity_pattern}")
-            st.markdown(f"**Possible Sequence of Events:** {situation.possible_sequence_of_events}")
+            st.markdown(f"**Possible Sequence of Events:**\n{situation.possible_sequence_of_events}")
             st.markdown(f"**Potential Next Activity:** {situation.potential_next_activity}")
 
             c1, c2 = st.columns(2)
             with c1:
                 st.markdown("**Suspicious Indicators:**")
-                for ind in situation.suspicious_behavior_indicators:
+                indicators = situation.suspicious_behavior_indicators if isinstance(situation.suspicious_behavior_indicators, list) else [str(situation.suspicious_behavior_indicators)]
+                for ind in indicators:
                     st.markdown(f"- {ind}")
             with c2:
                 st.markdown("**Risk Indicators:**")
-                for risk in situation.risk_indicators:
+                r_indicators = situation.risk_indicators if isinstance(situation.risk_indicators, list) else [str(situation.risk_indicators)]
+                for risk in r_indicators:
                     st.markdown(f"- {risk}")
 
             st.markdown("---")
-            st.markdown(f"**Supporting Evidence:** {', '.join(situation.supporting_evidence)}")
+            ev_text = ", ".join(situation.supporting_evidence) if isinstance(situation.supporting_evidence, list) else str(situation.supporting_evidence)
+            st.markdown(f"**Supporting Evidence:** {ev_text}")
             st.markdown(f"**Confidence Level:** `{situation.confidence_level}`")
             st.markdown(f"**Uncertainties:** {situation.uncertainties}")
 

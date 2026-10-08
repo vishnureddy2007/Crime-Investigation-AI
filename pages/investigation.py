@@ -75,11 +75,11 @@ def _render_file_evidence_card(file_evidence: FileEvidence) -> None:
         c3.metric("Vehicles", file_evidence.vehicle_count)
         c4.metric("Bags", file_evidence.bag_count)
 
-        # HITL Weapon Verification Section (Section 15)
+        # Optional Investigator Audit & Override Section (Section 15)
         weapon_dets = [det for det in d.detections if det.label in {"weapon", "knife", "candidate_weapon"} or "weapon" in det.class_name.lower()]
         if weapon_dets:
-            st.markdown("#### 🛡️ Human-in-the-Loop (HITL) Weapon Verification")
-            st.caption("Review detected weapon candidates. Your confirmation or rejection updates final evidence, reports, and 3D scene reconstruction.")
+            with st.expander("🛡️ Investigator Audit & Manual Override (Optional)", expanded=False):
+                st.caption("Weapon verification runs automatically. You may optionally audit or override individual detections below.")
 
             for idx, w_det in enumerate(weapon_dets, start=1):
                 key = f"{w_det.label}@{w_det.confidence:.2f}"

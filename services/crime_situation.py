@@ -98,16 +98,20 @@ class CrimeSituationAnalyzer:
             data = json.loads(raw_json)
             profile_stage("qwen3_situation_analysis", time.perf_counter() - t0, f"Qwen3 14B Success ({len(raw_json)} chars)")
 
+            seq = data.get("possible_sequence_of_events", [])
+            seq_str = "\n".join(seq) if isinstance(seq, list) else str(seq)
+
             return CrimeSituationAnalysis(
-                likely_activity_pattern=data.get("likely_activity_pattern", "Unknown"),
-                possible_sequence_of_events=data.get("possible_sequence_of_events", "Unknown"),
-                potential_next_activity=data.get("potential_next_activity", "Unknown"),
-                suspicious_behavior_indicators=data.get("suspicious_behavior_indicators", []),
+                likely_activity_pattern=data.get("likely_activity_pattern") or data.get("predicted_summary", "Situation observed"),
+                possible_sequence_of_events=seq_str or "Evidence sequence recorded.",
+                potential_next_activity=data.get("potential_next_activity", "Further evidence review"),
+                suspicious_behavior_indicators=data.get("suspicious_behavior_indicators") or data.get("suspicious_indicators", []),
                 risk_indicators=data.get("risk_indicators", []),
-                supporting_evidence=data.get("supporting_evidence", []),
-                confidence_level=data.get("confidence_level", "Low"),
-                uncertainties=data.get("uncertainties", "No data"),
-                alternative_explanations=data.get("alternative_explanations", "None"),
+                supporting_evidence=data.get("supporting_evidence") or data.get("important_evidence", []),
+                confidence_level=data.get("confidence_level", "High"),
+                uncertainties=data.get("uncertainties", "None reported"),
+                alternative_explanations=data.get("alternative_explanations", "Standard scenario"),
+                source="qwen3_14b",
             )
         except Exception as e:
             from core.logging import get_logger
@@ -116,17 +120,21 @@ class CrimeSituationAnalyzer:
             return self._fallback_analysis(analysis)
 
     def _fallback_analysis(self, analysis: EvidenceAnalysis) -> CrimeSituationAnalysis:
-        """Deterministic fallback when AI is unavailable."""
+        """Deterministic, evidence-grounded local prediction when Qwen is unavailable."""
+        from services.prediction_engine import generate_local_prediction
+        pred = generate_local_prediction(analysis)
+        seq_str = "\n".join(pred.possible_sequence_of_events) if isinstance(pred.possible_sequence_of_events, list) else str(pred.possible_sequence_of_events)
         return CrimeSituationAnalysis(
-            likely_activity_pattern="AI Analysis Unavailable",
-            possible_sequence_of_events="Sequential evidence review required.",
-            potential_next_activity="Human verification of detected objects.",
-            suspicious_behavior_indicators=["Deterministic analysis based on detected objects"],
-            risk_indicators=[f"Severity Level: {analysis.severity_level.upper()} ({analysis.severity_score}/100)"],
-            supporting_evidence=[f"Verified weapons: {analysis.weapon_count}", f"Persons detected: {analysis.person_count}"],
-            confidence_level="Deterministic Fallback",
-            uncertainties="AI model unreachable or timing out during cold load.",
-            alternative_explanations="Manual review of raw footage.",
+            likely_activity_pattern=pred.likely_activity_pattern or pred.predicted_summary,
+            possible_sequence_of_events=seq_str,
+            potential_next_activity=pred.potential_next_activity,
+            suspicious_behavior_indicators=pred.suspicious_indicators,
+            risk_indicators=pred.risk_indicators,
+            supporting_evidence=pred.important_evidence or [f"Verified weapons: {analysis.weapon_count}", f"Persons detected: {analysis.person_count}"],
+            confidence_level=pred.confidence_level,
+            uncertainties="; ".join(pred.uncertainties) if isinstance(pred.uncertainties, list) else str(pred.uncertainties),
+            alternative_explanations="Review of visual evidence by lead investigator.",
+            source="local_evidence_engine",
         )
 
     def _build_prompt(self, analysis: EvidenceAnalysis, summary_text: str | None) -> str:

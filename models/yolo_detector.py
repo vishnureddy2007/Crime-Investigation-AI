@@ -101,7 +101,8 @@ def _enhance_contrast(image: Image.Image) -> Image.Image:
 
 _WEAPON_LABEL_SYNONYMS: frozenset[str] = frozenset({
     "weapon", "knife", "gun", "pistol", "handgun", "firearm", "rifle",
-    "grenade", "candidate_weapon", "threat-weapon", "weapon-scan", "Gun", "Pistol", "Handgun"
+    "revolver", "Revolver", "shotgun", "Shotgun", "grenade", "Grenade",
+    "candidate_weapon", "threat-weapon", "weapon-scan", "Gun", "Pistol", "Handgun"
 })
 
 
