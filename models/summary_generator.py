@@ -79,25 +79,25 @@ def build_template_summary(analysis: EvidenceAnalysis) -> DetailedNarrativeSumma
     objects = (
         f"Total objects detected: {analysis.total_objects}. "
         f"Breakdown: Persons({analysis.person_count}), "
-        f"Weapons({analysis.weapon_count + analysis.candidate_weapon_count}), "
+        f"Verified Weapons({analysis.verified_weapon_count}), "
         f"Vehicles({analysis.vehicle_count}), Bags({analysis.bag_count})."
     )
 
     # 5. Verified Findings
     verified = []
-    if analysis.weapon_count > 0:
-        verified.append(f"{analysis.weapon_count} verified weapon(s)")
+    if analysis.verified_weapon_count > 0:
+        verified.append(f"{analysis.verified_weapon_count} VERIFIED weapon(s)")
     if analysis.person_count > 0:
         verified.append(f"{analysis.person_count} person(s)")
     if not verified:
-        verified_text = "No high-confidence verified findings."
+        verified_text = "No verified weapons detected."
     else:
         verified_text = "Verified: " + ", ".join(verified)
 
     # 6. Possible Findings
     possible = []
     if analysis.candidate_weapon_count > 0:
-        possible.append(f"{analysis.candidate_weapon_count} possible weapon candidate(s)")
+        possible.append(f"{analysis.candidate_weapon_count} unverified weapon candidate(s) (excluded from verified count)")
     if analysis.average_confidence < 0.6:
         possible.append("Low average detection confidence")
     if not possible:

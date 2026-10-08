@@ -45,12 +45,51 @@ class WeaponVerification:
 
 
 # Labels the analyzer treats as weapons when present in `counts_by_label`.
-# Labels the analyzer treats as weapons when present in `counts_by_label`.
 WEAPON_LABELS: frozenset[str] = frozenset({
-    "weapon", "knife", "revolver", "Revolver", "shotgun", "Shotgun",
-    "gun", "Gun", "pistol", "Pistol", "rifle", "Rifle", "handgun", "Handgun",
-    "firearm", "Firearm", "grenade", "Grenade", "candidate_weapon"
+    "weapon", "Weapon", "knife", "Knife", "revolver", "Revolver",
+    "shotgun", "Shotgun", "gun", "Gun", "pistol", "Pistol",
+    "rifle", "Rifle", "handgun", "Handgun", "firearm", "Firearm",
+    "grenade", "Grenade", "candidate_weapon"
 })
+
+CANONICAL_WEAPON_SUBTYPES: dict[str, str] = {
+    "revolver": "revolver",
+    "Revolver": "revolver",
+    "pistol": "pistol",
+    "Pistol": "pistol",
+    "handgun": "handgun",
+    "Handgun": "handgun",
+    "rifle": "rifle",
+    "Rifle": "rifle",
+    "shotgun": "shotgun",
+    "Shotgun": "shotgun",
+    "firearm": "firearm",
+    "Firearm": "firearm",
+    "gun": "gun",
+    "Gun": "gun",
+    "knife": "knife",
+    "Knife": "knife",
+    "grenade": "grenade",
+    "Grenade": "grenade",
+    "weapon": "weapon",
+    "Weapon": "weapon",
+}
+
+
+@dataclass
+class WeaponVerificationResult:
+    """Canonical verification output for a set of detections."""
+
+    raw_detections: list[Any]
+    weapon_candidates: list[Any]
+    verified_weapons: list[Any]
+    uncertain_detections: list[Any]
+    rejected_detections: list[Any]
+    verified_count: int
+    candidate_count: int
+    reasons: dict[str, str]
+    weapon_status: str  # "VERIFIED_WEAPON_PRESENT" | "NO_VERIFIED_WEAPON"
+    canonical_subtype: str  # "revolver" | "pistol" | "handgun" | "rifle" | "shotgun" | "knife" | "weapon"
 
 
 def classify_weapon_detection(
@@ -60,35 +99,66 @@ def classify_weapon_detection(
     bbox: Any | None = None,
     img_width: float | None = None,
     img_height: float | None = None,
+    class_name: str | None = None,
 ) -> tuple[str, str]:
     """
-    Classify a detection into one of: 'WEAPON', 'NOT_WEAPON', 'UNCERTAIN'.
+    Multi-stage weapon verification logic.
     Returns tuple of (final_state, post_mapping_label).
+    final_state: 'WEAPON' | 'NOT_WEAPON' | 'UNCERTAIN'
     """
-    if label not in WEAPON_LABELS:
+    raw_label = (class_name or label or "").strip()
+    lbl_lower = raw_label.lower()
+
+    if label not in WEAPON_LABELS and lbl_lower not in WEAPON_LABELS:
         return "NOT_WEAPON", label
 
-    target_label = "weapon" if label != "knife" else "knife"
+    # Preserve canonical weapon subtype (e.g. revolver, pistol, rifle, knife)
+    subtype = CANONICAL_WEAPON_SUBTYPES.get(raw_label, CANONICAL_WEAPON_SUBTYPES.get(lbl_lower, "weapon"))
+    target_label = "weapon" if subtype != "knife" else "knife"
 
-    # Box Quality & Size Validation (Supporting Signals)
+    # Stage 1: Bounding Box & Aspect Ratio Validation
+    bw, bh, aspect_ratio, rel_area = 0.0, 0.0, 1.0, None
     if bbox is not None and hasattr(bbox, "width") and hasattr(bbox, "height"):
         bw, bh = bbox.width, bbox.height
         area = bbox.area if hasattr(bbox, "area") else bw * bh
-        aspect_ratio = (bw / max(1.0, bh)) if bw >= bh else (bh / max(1.0, bw))
+        aspect_ratio = (max(bw, bh) / max(1.0, min(bw, bh)))
 
-        # Extreme artifact box (e.g. 1px line or tiny <16px dot with sub-0.70 confidence)
-        if (bw < 4 or bh < 4 or area < 16.0 or aspect_ratio > 15.0) and confidence < WEAPON_HIGH_CONF_THRESHOLD:
+        if img_width is not None and img_height is not None and img_width > 0 and img_height > 0:
+            rel_area = area / max(1.0, float(img_width * img_height))
+
+        # Rejection Rule 1A: Tiny artifact box (< 6px or area < 25px) with sub-0.80 confidence
+        if (bw < 6 or bh < 6 or area < 25.0) and confidence < WEAPON_HIGH_CONF_THRESHOLD:
             return "NOT_WEAPON", target_label
 
-    # High Confidence Shortcut
+        # Rejection Rule 1B: Extreme aspect ratio (> 8.0) with sub-0.80 confidence
+        if aspect_ratio > 8.0 and confidence < WEAPON_HIGH_CONF_THRESHOLD:
+            return "NOT_WEAPON", target_label
+
+        # Rejection Rule 1C: Excessive screen area (> 50% screen) with sub-0.80 confidence
+        if rel_area is not None and rel_area > 0.50 and confidence < WEAPON_HIGH_CONF_THRESHOLD:
+            return "NOT_WEAPON", target_label
+
+    # Stage 2: High Confidence Shortcut
     if confidence >= WEAPON_HIGH_CONF_THRESHOLD:
         return "WEAPON", target_label
 
-    # Credibility Boost for weapon-trained models or temporal tracking
-    source_boost = 0.10 if source in {"weapon", "threat-weapon", "temporal", "weapon-scan"} else 0.0
-    effective_score = confidence + source_boost
+    # Stage 3: Multi-Signal Verification Score Computation
+    score = confidence
 
-    if effective_score >= WEAPON_VERIFY_THRESHOLD:
+    # Source credibility boost (only for dedicated weapon models with conf >= 0.35)
+    if source in {"weapon", "threat-weapon", "temporal"} and confidence >= 0.35:
+        score += 0.08
+
+    # Specific subclass boost (specific firearm classes have lower false positive rate)
+    if subtype in {"revolver", "pistol", "handgun", "rifle", "shotgun"}:
+        score += 0.05
+
+    # Shape & scale quality boost
+    if 1.2 <= aspect_ratio <= 5.0 and (rel_area is None or 0.0005 <= rel_area <= 0.25):
+        score += 0.05
+
+    # Stage 4: Threshold Evaluation
+    if score >= WEAPON_VERIFY_THRESHOLD and confidence >= 0.38:
         return "WEAPON", target_label
     elif confidence >= WEAPON_CONF_THRESHOLD:
         return "UNCERTAIN", target_label
@@ -98,7 +168,7 @@ def classify_weapon_detection(
 
 def separate_detection_states(detections: list) -> dict[str, list]:
     """
-    Categorize raw detections into separate structured lists:
+    Categorize raw detections into separate structured lists with duplicate suppression:
       - raw_detections
       - weapon_candidates
       - verified_weapons
@@ -110,19 +180,20 @@ def separate_detection_states(detections: list) -> dict[str, list]:
     verified = []
     rejected = []
     uncertain = []
+    reasons: dict[str, str] = {}
 
     for d in raw_list:
-        label = getattr(d, "label", getattr(d, "class_name", ""))
+        lbl = getattr(d, "label", getattr(d, "class_name", ""))
+        cls_name = getattr(d, "class_name", "")
         conf = getattr(d, "confidence", 0.0)
         source = getattr(d, "source", "general")
         bbox = getattr(d, "bbox", None)
 
-        if label in WEAPON_LABELS or getattr(d, "class_name", "").lower() in WEAPON_LABELS:
+        if lbl in WEAPON_LABELS or cls_name in WEAPON_LABELS or cls_name.lower() in WEAPON_LABELS:
             candidates.append(d)
-            state, target_label = classify_weapon_detection(label, conf, source, bbox)
+            state, target_label = classify_weapon_detection(lbl, conf, source, bbox, class_name=cls_name)
 
             if state == "WEAPON":
-                # Ensure weapon_status is 'verified'
                 if hasattr(d, "weapon_status"):
                     d.weapon_status = "verified"
                 verified.append(d)
@@ -130,10 +201,12 @@ def separate_detection_states(detections: list) -> dict[str, list]:
                 if hasattr(d, "weapon_status"):
                     d.weapon_status = "candidate"
                 uncertain.append(d)
+                reasons[f"{lbl}@{conf:.2f}"] = "INSUFFICIENT_VISUAL_EVIDENCE"
             else:
                 if hasattr(d, "weapon_status"):
                     d.weapon_status = "rejected"
                 rejected.append(d)
+                reasons[f"{lbl}@{conf:.2f}"] = "LOW_CONFIDENCE_OR_INVALID_SHAPE"
 
     return {
         "raw_detections": raw_list,
@@ -141,14 +214,18 @@ def separate_detection_states(detections: list) -> dict[str, list]:
         "verified_weapons": verified,
         "rejected_detections": rejected,
         "uncertain_detections": uncertain,
+        "verified_count": len(verified),
+        "candidate_count": len(uncertain),
+        "weapon_status": "VERIFIED_WEAPON_PRESENT" if len(verified) > 0 else "NO_VERIFIED_WEAPON",
+        "reasons": reasons,
     }
 
 
 def verify_detection(label: str, confidence: float, source: str = "general") -> WeaponVerification:
     """
-    Classify a single weapon-class detection.
+    Classify a single weapon-class detection into WeaponVerification.
     """
-    if label not in WEAPON_LABELS:
+    if label not in WEAPON_LABELS and label.lower() not in WEAPON_LABELS:
         return WeaponVerification(
             status="non_weapon",
             label=label,
@@ -196,26 +273,29 @@ def verified_counts(detections: list) -> tuple[int, int]:
 
 def apply_to_detections(detections: list) -> list:
     """
-    Mutate a list of `Detection` objects: return a NEW list with verified weapon labels.
+    Mutate a list of `Detection` objects: return a NEW list with verified weapon labels and statuses.
     """
     from models.schemas import Detection  # local import to avoid cycle
 
     out: list[Detection] = []
     for d in detections:
+        cls_name = getattr(d, "class_name", "")
+        raw_label = d.label or cls_name
         state, target_label = classify_weapon_detection(
-            d.label, d.confidence, getattr(d, "source", "general"), d.bbox
+            raw_label, d.confidence, getattr(d, "source", "general"), d.bbox, class_name=cls_name
         )
         new_label = d.label
         status = "non_weapon"
 
-        if d.label in WEAPON_LABELS or d.class_name.lower() in WEAPON_LABELS:
+        if raw_label in WEAPON_LABELS or cls_name.lower() in WEAPON_LABELS:
             if state == "WEAPON":
-                new_label = "weapon" if d.label != "knife" else "knife"
+                new_label = target_label
                 status = "verified"
             elif state == "UNCERTAIN":
                 new_label = "candidate_weapon"
                 status = "candidate"
             else:
+                new_label = d.label
                 status = "rejected"
 
         out.append(

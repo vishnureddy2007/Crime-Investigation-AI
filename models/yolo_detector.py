@@ -568,7 +568,7 @@ class MultiSourceDetector:
                     enhanced_img = _enhance_contrast(image)
                     pass2 = self._weapon.detect_image_raw(
                         enhanced_img, source_name=source_name,
-                        confidence=w_conf,
+                        confidence=max(0.40, w_conf + 0.10),
                         iou=iou_thr,
                         source_tag="weapon",
                         imgsz=1280,
@@ -581,8 +581,8 @@ class MultiSourceDetector:
                 bw = d.bbox.x2 - d.bbox.x1
                 bh = d.bbox.y2 - d.bbox.y1
                 rel_area = (bw * bh) / max(1.0, float(W * H))
-                aspect = bw / max(1.0, bh)
-                if bw >= 8 and bh >= 8 and (rel_area >= 0.0003 or d.confidence >= 0.80) and (0.12 < aspect < 8.0 or d.confidence >= 0.80):
+                aspect = max(bw, bh) / max(1.0, min(bw, bh))
+                if bw >= 8 and bh >= 8 and (rel_area >= 0.0003 or d.confidence >= 0.80) and (aspect <= 8.0 or d.confidence >= 0.80):
                     if bw * bh < 0.50 * W * H:
                         weapon_extra.append(d)
 
@@ -610,7 +610,7 @@ class MultiSourceDetector:
                     t_enhanced = _enhance_contrast(image)
                     t_pass2 = self._threat_weapon.detect_image_raw(
                         t_enhanced, source_name=source_name,
-                        confidence=t_conf, iou=iou_thr,
+                        confidence=max(0.40, t_conf + 0.10), iou=iou_thr,
                         source_tag="threat-weapon", imgsz=1280,
                     )
                 except (RuntimeError, OSError):
@@ -621,8 +621,8 @@ class MultiSourceDetector:
                 bw = d.bbox.x2 - d.bbox.x1
                 bh = d.bbox.y2 - d.bbox.y1
                 rel_area = (bw * bh) / max(1.0, float(W * H))
-                aspect = bw / max(1.0, bh)
-                if bw >= 8 and bh >= 8 and (rel_area >= 0.0003 or d.confidence >= 0.80) and (0.12 < aspect < 8.0 or d.confidence >= 0.80):
+                aspect = max(bw, bh) / max(1.0, min(bw, bh))
+                if bw >= 8 and bh >= 8 and (rel_area >= 0.0003 or d.confidence >= 0.80) and (aspect <= 8.0 or d.confidence >= 0.80):
                     if bw * bh < 0.50 * W * H:
                         threat_extra.append(d)
 
