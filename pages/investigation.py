@@ -203,7 +203,62 @@ def _render_upload_and_detect_tab() -> None:
             st.session_state[SessionKeys.LAST_BATCH_RESULT] = batch_result
             if batch_result.combined_analysis:
                 st.session_state[SessionKeys.LAST_ANALYSIS] = batch_result.combined_analysis
-                auto_save_last_analysis(batch_result.combined_analysis)
+                case_id = auto_save_last_analysis(batch_result.combined_analysis)
+
+                if case_id is not None:
+                    from database.repository import (
+                        save_case_evidence_item,
+                        save_uploaded_evidence_to_disk,
+                    )
+                    from config import DATABASE_PATH
+
+                    # Save per-file evidence items to disk and database
+                    file_dict = {name: b for name, b in all_files}
+                    for idx, f_ev in enumerate(batch_result.files, start=1):
+                        if not f_ev.succeeded:
+                            continue
+                        f_bytes = file_dict.get(f_ev.filename, b"")
+                        saved_path = save_uploaded_evidence_to_disk(case_id, f_ev.filename, f_bytes)
+
+                        annotated_path = None
+                        if f_ev.detection and f_ev.detection.annotated_image:
+                            try:
+                                ann_dir = saved_path.parent
+                                ann_file = ann_dir / f"annotated_{saved_path.name}"
+                                f_ev.detection.annotated_image.save(ann_file, format="JPEG", quality=90)
+                                annotated_path = str(ann_file)
+                            except Exception:
+                                pass
+
+                        # Build per-file payload
+                        dets_payload = []
+                        if f_ev.detection and f_ev.detection.detections:
+                            dets_payload = [d.as_dict() for d in f_ev.detection.detections]
+                        elif f_ev.video and f_ev.video.keyframes:
+                            for kf in f_ev.video.keyframes:
+                                if kf.detection:
+                                    dets_payload.extend([d.as_dict() for d in kf.detection.detections])
+
+                        dur = f_ev.video.duration_sec if f_ev.video else 0.0
+                        fps_val = f_ev.video.fps if f_ev.video else 0.0
+                        fc = f_ev.video.frame_count if f_ev.video else 0
+
+                        save_case_evidence_item(
+                            db_path=DATABASE_PATH,
+                            case_id=case_id,
+                            evidence_id=f"EVD-{idx:03d}",
+                            filename=f_ev.filename,
+                            file_type=f_ev.source_type,
+                            file_path=str(saved_path),
+                            annotated_path=annotated_path,
+                            duration=dur,
+                            fps=fps_val,
+                            frame_count=fc,
+                            payload={
+                                "metrics": f_ev.metrics,
+                                "detections": dets_payload,
+                            },
+                        )
 
             st.success(f"Processing complete! Processed {len(batch_result.files)} file(s).")
 

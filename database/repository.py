@@ -848,3 +848,80 @@ def delete_investigation_video(db_path: Path, video_id: int) -> None:
     with get_connection(db_path) as conn:
         conn.execute("DELETE FROM investigation_videos WHERE id = ?", (video_id,))
 
+
+# ----------------------------------------------------------------------
+# Case Evidence Items Repository
+# ----------------------------------------------------------------------
+
+def save_uploaded_evidence_to_disk(case_id: int, filename: str, data: bytes) -> Path:
+    """Save raw uploaded evidence file to outputs/evidence/CASE_<case_id>/<filename>."""
+    from config import OUTPUTS_DIR
+    target_dir = OUTPUTS_DIR / "evidence" / f"CASE_{case_id:03d}"
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    # Sanitize filename
+    safe_name = "".join(c if c.isalnum() or c in ".-_" else "_" for c in filename)
+    target_path = target_dir / safe_name
+    target_path.write_bytes(data)
+    return target_path
+
+
+def save_case_evidence_item(
+    db_path: Path,
+    case_id: int,
+    evidence_id: str,
+    filename: str,
+    file_type: str,
+    file_path: str,
+    annotated_path: str | None = None,
+    duration: float = 0.0,
+    fps: float = 0.0,
+    frame_count: int = 0,
+    payload: dict[str, Any] | None = None
+) -> int:
+    """Save an evidence item record belonging to a specific case."""
+    now = _now_iso()
+    payload_json = _to_json(payload or {})
+    with get_connection(db_path) as conn:
+        cur = conn.execute(
+            "INSERT INTO case_evidence_items "
+            "(case_id, evidence_id, filename, file_type, file_path, annotated_path, "
+            "duration, fps, frame_count, payload_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                case_id,
+                evidence_id,
+                filename,
+                file_type,
+                file_path,
+                annotated_path,
+                duration,
+                fps,
+                frame_count,
+                payload_json,
+                now,
+            )
+        )
+        return int(cur.lastrowid)
+
+
+def list_case_evidence_items(db_path: Path, case_id: int) -> list[dict[str, Any]]:
+    """List all evidence item records for a case, ordered by id ASC."""
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM case_evidence_items WHERE case_id = ? ORDER BY id ASC",
+            (case_id,)
+        ).fetchall()
+
+    results: list[dict[str, Any]] = []
+    for r in rows:
+        item = dict(r)
+        if item.get("payload_json"):
+            try:
+                item["payload"] = _from_json(item["payload_json"])
+            except Exception:
+                item["payload"] = {}
+        results.append(item)
+    return results
+
+

@@ -136,6 +136,22 @@ CREATE TABLE IF NOT EXISTS investigation_videos (
     FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS case_evidence_items (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    case_id          INTEGER NOT NULL,
+    evidence_id      TEXT    NOT NULL,
+    filename         TEXT    NOT NULL,
+    file_type        TEXT    NOT NULL,
+    file_path        TEXT    NOT NULL,
+    annotated_path   TEXT,
+    duration         REAL    DEFAULT 0.0,
+    fps              REAL    DEFAULT 0.0,
+    frame_count      INTEGER DEFAULT 0,
+    payload_json     TEXT    NOT NULL,
+    created_at       TEXT    NOT NULL,
+    FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS ix_human_reviews_case
     ON human_reviews(case_id, created_at);
 """

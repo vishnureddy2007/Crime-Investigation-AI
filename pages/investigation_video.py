@@ -80,6 +80,55 @@ def render() -> None:
     if status == "OUTDATED":
         st.warning("⚠️ Evidence or human reviews have updated since this video was generated. Please regenerate to reflect the latest evidence.")
 
+    # Load Evidence Collection Preview
+    generator = InvestigationVideoGenerator(db_path=DATABASE_PATH)
+    collection = generator.get_case_evidence_collection(case_id)
+
+    st.markdown("---")
+    st.subheader("Case Evidence Overview")
+    mc1, mc2, mc3, mc4, mc5 = st.columns(5)
+    with mc1:
+        st.metric("Evidence Items", len(collection["inventory"]))
+    with mc2:
+        st.metric("Images", len(collection["images"]))
+    with mc3:
+        st.metric("Videos", len(collection["videos"]))
+    with mc4:
+        st.metric("Verified Weapons", collection["verified_weapon_count"])
+    with mc5:
+        st.metric("Persons", collection["person_count"])
+
+    # Video Generator Controls
+    st.markdown("---")
+    st.subheader("Video Generator Settings")
+    c_opt1, c_opt2 = st.columns(2)
+    with c_opt1:
+        detail_level = st.selectbox(
+            "Video Detail Level",
+            ["Detailed", "Standard", "Brief"],
+            index=0,
+            help="Detailed: Includes all evidence, overlays, timeline, AI assessment & summaries.",
+        )
+    with c_opt2:
+        video_mode = st.selectbox(
+            "Video Evidence Mode",
+            ["Representative Frames", "Short Evidence Clips", "Full Video"],
+            index=0,
+            help="Representative Frames samples keyframes across uploaded videos; Short Evidence Clips embeds clips around detection timestamps.",
+        )
+
+    # Evidence Selection Checkboxes
+    selected_ev_ids = None
+    if collection["inventory"]:
+        with st.expander("🔍 Filter Evidence Items to Include (Optional)", expanded=False):
+            all_ev = st.checkbox("☑ Include All Evidence Files", value=True)
+            if not all_ev:
+                selected_ev_ids = []
+                for item in collection["inventory"]:
+                    chk = st.checkbox(f"Include {item['evidence_id']} — {item['filename']} ({item['file_type'].upper()})", value=True)
+                    if chk:
+                        selected_ev_ids.append(item["evidence_id"])
+
     st.markdown("---")
 
     # Action Buttons
@@ -88,12 +137,14 @@ def render() -> None:
     with b_col1:
         btn_label = "Regenerate Video" if status == "READY" else "Generate Investigation Video"
         if st.button(btn_label, type="primary", use_container_width=True):
-            with st.spinner("Generating 2D forensic investigation explanation video..."):
+            with st.spinner("Generating evidence-grounded 2D forensic investigation explanation video..."):
                 try:
-                    generator = InvestigationVideoGenerator(db_path=DATABASE_PATH)
                     video_path, total_duration = generator.generate_video(
                         case_id=case_id,
                         force=True,
+                        selected_evidence_ids=selected_ev_ids,
+                        detail_level=detail_level,
+                        video_evidence_mode=video_mode,
                     )
                     st.session_state["last_investigation_video_path"] = str(video_path)
                     st.success(f"Generated investigation video ({total_duration:.1f}s).")

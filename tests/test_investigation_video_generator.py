@@ -108,3 +108,99 @@ def test_video_caching_and_outdated_marking(setup_test_db, tmp_path: Path):
 
     v_rec = get_latest_investigation_video(db_file, case_id)
     assert v_rec["status"] == "OUTDATED"
+
+
+def test_video_generation_multimedia_and_modes(tmp_path: Path):
+    """Acceptance test: 3 images + 1 video, missing media, corrupt media handling, and custom modes."""
+    import cv2
+    import numpy as np
+    from database.repository import save_uploaded_evidence_to_disk, save_case_evidence_item
+
+    db_file = tmp_path / "multimedia_test.db"
+    init_db(db_file)
+    case_id = save_case(db_file, "multimedia_case", "MIXED")
+
+    # 1. Create 3 valid image files
+    img_paths = []
+    for i in range(3):
+        p = tmp_path / f"test_img_{i}.jpg"
+        img = Image.new("RGB", (800, 600), color=(30 * i, 100, 150))
+        img.save(p)
+        img_paths.append(p)
+        save_case_evidence_item(
+            db_file,
+            case_id=case_id,
+            evidence_id=f"EVD-00{i+1}",
+            filename=p.name,
+            file_type="image",
+            file_path=str(p),
+            payload={"detections": [{"label": "person", "class_name": "person", "confidence": 0.88, "bbox": [50, 50, 200, 300]}]}
+        )
+
+    # 2. Create 1 valid video file (2 seconds at 10 fps = 20 frames)
+    vid_path = tmp_path / "test_video.mp4"
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    out = cv2.VideoWriter(str(vid_path), fourcc, 10.0, (640, 480))
+    for f in range(20):
+        frame = np.full((480, 640, 3), (f * 10, 120, 200), dtype=np.uint8)
+        out.write(frame)
+    out.release()
+
+    save_case_evidence_item(
+        db_file,
+        case_id=case_id,
+        evidence_id="EVD-004",
+        filename="test_video.mp4",
+        file_type="video",
+        file_path=str(vid_path),
+        duration=2.0,
+        fps=10.0,
+        frame_count=20,
+        payload={"detections": [{"label": "handgun", "class_name": "handgun", "confidence": 0.95, "weapon_status": "verified", "bbox": [100, 100, 250, 250]}]}
+    )
+
+    # 3. Add 1 missing media item
+    save_case_evidence_item(
+        db_file,
+        case_id=case_id,
+        evidence_id="EVD-005",
+        filename="nonexistent.jpg",
+        file_type="image",
+        file_path=str(tmp_path / "nonexistent.jpg"),
+        payload={"detections": []}
+    )
+
+    # 4. Add 1 corrupt image file
+    corrupt_path = tmp_path / "corrupt.jpg"
+    with open(corrupt_path, "wb") as f:
+        f.write(b"NOT_AN_IMAGE_FILE_DATA")
+
+    save_case_evidence_item(
+        db_file,
+        case_id=case_id,
+        evidence_id="EVD-006",
+        filename="corrupt.jpg",
+        file_type="image",
+        file_path=str(corrupt_path),
+        payload={"detections": []}
+    )
+
+    # Run InvestigationVideoGenerator
+    generator = InvestigationVideoGenerator(db_path=db_file, fps=10, resolution=(640, 360))
+
+    # Test evidence collection assembly
+    collection = generator.get_case_evidence_collection(case_id)
+    assert len(collection["items"]) == 6  # 3 images + 1 video + 1 missing + 1 corrupt
+
+    video_output, duration = generator.generate_video(
+        case_id=case_id,
+        output_dir=tmp_path / "out_videos",
+        detail_level="Detailed",
+        video_evidence_mode="Representative Frames",
+        force=True
+    )
+
+    assert video_output.exists()
+    assert video_output.stat().st_size > 0
+    assert duration > 5.0
+
