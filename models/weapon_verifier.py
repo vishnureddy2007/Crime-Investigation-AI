@@ -92,6 +92,130 @@ class WeaponVerificationResult:
     canonical_subtype: str  # "revolver" | "pistol" | "handgun" | "rifle" | "shotgun" | "knife" | "weapon"
 
 
+def _compute_bbox_iou(a: Any, b: Any) -> float:
+    """Compute IoU between two bounding box objects or dicts."""
+    ax1 = getattr(a, "x1", a.get("x1", 0) if isinstance(a, dict) else 0)
+    ay1 = getattr(a, "y1", a.get("y1", 0) if isinstance(a, dict) else 0)
+    ax2 = getattr(a, "x2", a.get("x2", 0) if isinstance(a, dict) else 0)
+    ay2 = getattr(a, "y2", a.get("y2", 0) if isinstance(a, dict) else 0)
+
+    bx1 = getattr(b, "x1", b.get("x1", 0) if isinstance(b, dict) else 0)
+    by1 = getattr(b, "y1", b.get("y1", 0) if isinstance(b, dict) else 0)
+    bx2 = getattr(b, "x2", b.get("x2", 0) if isinstance(b, dict) else 0)
+    by2 = getattr(b, "y2", b.get("y2", 0) if isinstance(b, dict) else 0)
+
+    x1 = max(ax1, bx1)
+    y1 = max(ay1, by1)
+    x2 = min(ax2, bx2)
+    y2 = min(ay2, by2)
+    inter_w = max(0.0, x2 - x1)
+    inter_h = max(0.0, y2 - y1)
+    inter = inter_w * inter_h
+    if inter <= 0:
+        return 0.0
+
+    area_a = getattr(a, "area", (ax2 - ax1) * (ay2 - ay1))
+    area_b = getattr(b, "area", (bx2 - bx1) * (by2 - by1))
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _compute_bbox_ios(a: Any, b: Any) -> float:
+    """Compute Intersection-over-Smaller box area."""
+    ax1 = getattr(a, "x1", a.get("x1", 0) if isinstance(a, dict) else 0)
+    ay1 = getattr(a, "y1", a.get("y1", 0) if isinstance(a, dict) else 0)
+    ax2 = getattr(a, "x2", a.get("x2", 0) if isinstance(a, dict) else 0)
+    ay2 = getattr(a, "y2", a.get("y2", 0) if isinstance(a, dict) else 0)
+
+    bx1 = getattr(b, "x1", b.get("x1", 0) if isinstance(b, dict) else 0)
+    by1 = getattr(b, "y1", b.get("y1", 0) if isinstance(b, dict) else 0)
+    bx2 = getattr(b, "x2", b.get("x2", 0) if isinstance(b, dict) else 0)
+    by2 = getattr(b, "y2", b.get("y2", 0) if isinstance(b, dict) else 0)
+
+    x1 = max(ax1, bx1)
+    y1 = max(ay1, by1)
+    x2 = min(ax2, bx2)
+    y2 = min(ay2, by2)
+    inter_w = max(0.0, x2 - x1)
+    inter_h = max(0.0, y2 - y1)
+    inter = inter_w * inter_h
+    if inter <= 0:
+        return 0.0
+
+    area_a = getattr(a, "area", (ax2 - ax1) * (ay2 - ay1))
+    area_b = getattr(b, "area", (bx2 - bx1) * (by2 - by1))
+    min_area = min(area_a, area_b)
+    return inter / min_area if min_area > 0 else 0.0
+
+
+def verify_weapon_crop_visual(
+    image: Any | None,
+    bbox: Any | None,
+    class_name: str = "weapon",
+    confidence: float = 0.0,
+) -> tuple[float, str]:
+    """
+    Perform visual crop verification on candidate image region.
+    Returns (score_delta, diagnostic_reason).
+    """
+    if image is None or bbox is None:
+        return 0.0, "NO_IMAGE_CROP"
+
+    try:
+        import numpy as np
+        from PIL import Image
+
+        if not isinstance(image, Image.Image):
+            return 0.0, "INVALID_IMAGE_FORMAT"
+
+        img_w, img_h = image.size
+        if hasattr(bbox, "x1"):
+            x1, y1, x2, y2 = bbox.x1, bbox.y1, bbox.x2, bbox.y2
+        elif isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+            x1, y1, x2, y2 = bbox
+        else:
+            return 0.0, "INVALID_BBOX"
+
+        # Contextual padding (15%)
+        pad_w = (x2 - x1) * 0.15
+        pad_h = (y2 - y1) * 0.15
+        cx1 = max(0, int(x1 - pad_w))
+        cy1 = max(0, int(y1 - pad_h))
+        cx2 = min(img_w, int(x2 + pad_w))
+        cy2 = min(img_h, int(y2 + pad_h))
+
+        if cx2 - cx1 < 4 or cy2 - cy1 < 4:
+            return -0.15, "TINY_CROP"
+
+        crop = image.crop((cx1, cy1, cx2, cy2))
+        np_crop = np.array(crop.convert("RGB"))
+        gray = np.mean(np_crop, axis=2).astype(np.uint8)
+
+        try:
+            import cv2
+            edges = cv2.Canny(gray, 50, 150)
+            edge_ratio = float(np.count_nonzero(edges)) / float(edges.size)
+        except Exception:
+            gx, gy = np.gradient(gray.astype(float))
+            grad = np.sqrt(gx**2 + gy**2)
+            edge_ratio = float(np.count_nonzero(grad > 25.0)) / float(grad.size)
+
+        cw = max(1, cx2 - cx1)
+        ch = max(1, cy2 - cy1)
+        aspect = max(cw, ch) / max(1.0, min(cw, ch))
+
+        if edge_ratio >= 0.04 and 1.1 <= aspect <= 6.0:
+            return 0.10, "FIREARM_STRUCTURE_VALIDATED"
+        elif edge_ratio < 0.015:
+            return -0.12, "FLAT_GRADIENT_NOISE"
+        elif aspect > 8.0:
+            return -0.15, "EXTREME_ASPECT_RATIO"
+        else:
+            return 0.02, "NEUTRAL_CROP_VISUAL"
+    except Exception as exc:
+        return 0.0, f"CROP_VERIFICATION_ERROR: {exc}"
+
+
 def classify_weapon_detection(
     label: str,
     confidence: float,
@@ -100,6 +224,7 @@ def classify_weapon_detection(
     img_width: float | None = None,
     img_height: float | None = None,
     class_name: str | None = None,
+    image: Any | None = None,
 ) -> tuple[str, str]:
     """
     Multi-stage weapon verification logic.
@@ -126,15 +251,15 @@ def classify_weapon_detection(
         if img_width is not None and img_height is not None and img_width > 0 and img_height > 0:
             rel_area = area / max(1.0, float(img_width * img_height))
 
-        # Rejection Rule 1A: Tiny artifact box (< 6px or area < 25px) with sub-0.80 confidence
+        # Rejection Rule 1A: Tiny artifact box (< 6px or area < 25px) with sub-0.78 confidence
         if (bw < 6 or bh < 6 or area < 25.0) and confidence < WEAPON_HIGH_CONF_THRESHOLD:
             return "NOT_WEAPON", target_label
 
-        # Rejection Rule 1B: Extreme aspect ratio (> 8.0) with sub-0.80 confidence
+        # Rejection Rule 1B: Extreme aspect ratio (> 8.0) with sub-0.78 confidence
         if aspect_ratio > 8.0 and confidence < WEAPON_HIGH_CONF_THRESHOLD:
             return "NOT_WEAPON", target_label
 
-        # Rejection Rule 1C: Excessive screen area (> 50% screen) with sub-0.80 confidence
+        # Rejection Rule 1C: Excessive screen area (> 50% screen) with sub-0.78 confidence
         if rel_area is not None and rel_area > 0.50 and confidence < WEAPON_HIGH_CONF_THRESHOLD:
             return "NOT_WEAPON", target_label
 
@@ -142,23 +267,28 @@ def classify_weapon_detection(
     if confidence >= WEAPON_HIGH_CONF_THRESHOLD:
         return "WEAPON", target_label
 
-    # Stage 3: Multi-Signal Verification Score Computation
-    score = confidence
+    # Stage 3: Crop Visual Feature Analysis
+    visual_boost, visual_diag = verify_weapon_crop_visual(image, bbox, class_name=subtype, confidence=confidence)
+    if visual_diag == "FLAT_GRADIENT_NOISE" and confidence < 0.65:
+        return "NOT_WEAPON", target_label
 
-    # Source credibility boost (only for dedicated weapon models with conf >= 0.35)
-    if source in {"weapon", "threat-weapon", "temporal"} and confidence >= 0.35:
+    # Stage 4: Multi-Signal Verification Score Computation
+    score = confidence + visual_boost
+
+    # Source credibility boost (only for dedicated weapon models with conf >= 0.32)
+    if source in {"weapon", "threat-weapon", "temporal"} and confidence >= 0.32:
         score += 0.08
 
-    # Specific subclass boost (specific firearm classes have lower false positive rate)
+    # Specific subclass boost (specific firearm classes like revolver/pistol have lower false positive priors)
     if subtype in {"revolver", "pistol", "handgun", "rifle", "shotgun"}:
-        score += 0.05
+        score += 0.07
 
     # Shape & scale quality boost
-    if 1.2 <= aspect_ratio <= 5.0 and (rel_area is None or 0.0005 <= rel_area <= 0.25):
+    if 1.1 <= aspect_ratio <= 5.5 and (rel_area is None or 0.0005 <= rel_area <= 0.25):
         score += 0.05
 
-    # Stage 4: Threshold Evaluation
-    if score >= WEAPON_VERIFY_THRESHOLD and confidence >= 0.38:
+    # Stage 5: Threshold Evaluation
+    if score >= WEAPON_VERIFY_THRESHOLD and confidence >= 0.32:
         return "WEAPON", target_label
     elif confidence >= WEAPON_CONF_THRESHOLD:
         return "UNCERTAIN", target_label
@@ -166,7 +296,7 @@ def classify_weapon_detection(
         return "NOT_WEAPON", target_label
 
 
-def separate_detection_states(detections: list) -> dict[str, list]:
+def separate_detection_states(detections: list, image: Any | None = None) -> dict[str, Any]:
     """
     Categorize raw detections into separate structured lists with duplicate suppression:
       - raw_detections
@@ -175,6 +305,9 @@ def separate_detection_states(detections: list) -> dict[str, list]:
       - rejected_detections
       - uncertain_detections
     """
+    from core.logging import get_logger
+    logger = get_logger("weapon_verifier")
+
     raw_list = list(detections)
     candidates = []
     verified = []
@@ -182,31 +315,85 @@ def separate_detection_states(detections: list) -> dict[str, list]:
     uncertain = []
     reasons: dict[str, str] = {}
 
+    # 1. Filter initial candidate weapon detections
+    raw_candidates = []
     for d in raw_list:
+        lbl = getattr(d, "label", getattr(d, "class_name", ""))
+        cls_name = getattr(d, "class_name", "")
+        if lbl in WEAPON_LABELS or cls_name in WEAPON_LABELS or cls_name.lower() in WEAPON_LABELS:
+            raw_candidates.append(d)
+
+    # 2. Class-aware candidate deduplication (IoU > 0.35 / IoS > 0.60)
+    sorted_candidates = sorted(raw_candidates, key=lambda c: getattr(c, "confidence", 0.0), reverse=True)
+    kept_candidates = []
+
+    for cand in sorted_candidates:
+        is_dup = False
+        b1 = getattr(cand, "bbox", None)
+        if b1 is not None:
+            for kept in kept_candidates:
+                b2 = getattr(kept, "bbox", None)
+                if b2 is not None:
+                    iou_val = _compute_bbox_iou(b1, b2)
+                    ios_val = _compute_bbox_ios(b1, b2)
+                    if iou_val > 0.35 or ios_val > 0.60:
+                        is_dup = True
+                        if hasattr(cand, "weapon_status"):
+                            cand.weapon_status = "rejected"
+                        rejected.append(cand)
+                        lbl_key = getattr(cand, "label", getattr(cand, "class_name", "weapon"))
+                        conf_val = getattr(cand, "confidence", 0.0)
+                        reasons[f"{lbl_key}@{conf_val:.2f}"] = "DUPLICATE_DETECTION"
+                        logger.info("[WEAPON] Candidate rejected: duplicate overlap (IoU=%.2f, IoS=%.2f)", iou_val, ios_val)
+                        break
+        if not is_dup:
+            kept_candidates.append(cand)
+            candidates.append(cand)
+
+    # 3. Multi-stage verification for non-duplicate candidates
+    for idx, d in enumerate(kept_candidates, start=1):
         lbl = getattr(d, "label", getattr(d, "class_name", ""))
         cls_name = getattr(d, "class_name", "")
         conf = getattr(d, "confidence", 0.0)
         source = getattr(d, "source", "general")
         bbox = getattr(d, "bbox", None)
 
-        if lbl in WEAPON_LABELS or cls_name in WEAPON_LABELS or cls_name.lower() in WEAPON_LABELS:
-            candidates.append(d)
-            state, target_label = classify_weapon_detection(lbl, conf, source, bbox, class_name=cls_name)
+        state, target_label = classify_weapon_detection(lbl, conf, source, bbox, class_name=cls_name, image=image)
 
-            if state == "WEAPON":
-                if hasattr(d, "weapon_status"):
-                    d.weapon_status = "verified"
-                verified.append(d)
-            elif state == "UNCERTAIN":
-                if hasattr(d, "weapon_status"):
-                    d.weapon_status = "candidate"
-                uncertain.append(d)
-                reasons[f"{lbl}@{conf:.2f}"] = "INSUFFICIENT_VISUAL_EVIDENCE"
-            else:
-                if hasattr(d, "weapon_status"):
-                    d.weapon_status = "rejected"
-                rejected.append(d)
-                reasons[f"{lbl}@{conf:.2f}"] = "LOW_CONFIDENCE_OR_INVALID_SHAPE"
+        if state == "WEAPON":
+            if hasattr(d, "weapon_status"):
+                d.weapon_status = "verified"
+            verified.append(d)
+            logger.info(
+                "[WEAPON] Candidate #%d VERIFIED: class=%s label=%s yolo_conf=%.2f state=VERIFIED_WEAPON",
+                idx, cls_name, target_label, conf
+            )
+        elif state == "UNCERTAIN":
+            if hasattr(d, "weapon_status"):
+                d.weapon_status = "candidate"
+            uncertain.append(d)
+            reasons[f"{lbl}@{conf:.2f}"] = "INSUFFICIENT_VISUAL_EVIDENCE"
+            logger.info(
+                "[WEAPON] Candidate #%d UNCERTAIN: class=%s yolo_conf=%.2f state=UNCERTAIN (candidate)",
+                idx, cls_name, conf
+            )
+        else:
+            if hasattr(d, "weapon_status"):
+                d.weapon_status = "rejected"
+            rejected.append(d)
+            reasons[f"{lbl}@{conf:.2f}"] = "LOW_CONFIDENCE_OR_INVALID_SHAPE"
+            logger.info(
+                "[WEAPON] Candidate #%d REJECTED: class=%s yolo_conf=%.2f state=NOT_WEAPON",
+                idx, cls_name, conf
+            )
+
+    canonical_subtype = "weapon"
+    if verified:
+        subtypes = [getattr(v, "class_name", "").lower() for v in verified]
+        for s in ["revolver", "pistol", "handgun", "rifle", "shotgun", "knife"]:
+            if s in subtypes:
+                canonical_subtype = s
+                break
 
     return {
         "raw_detections": raw_list,
@@ -217,6 +404,7 @@ def separate_detection_states(detections: list) -> dict[str, list]:
         "verified_count": len(verified),
         "candidate_count": len(uncertain),
         "weapon_status": "VERIFIED_WEAPON_PRESENT" if len(verified) > 0 else "NO_VERIFIED_WEAPON",
+        "canonical_subtype": canonical_subtype,
         "reasons": reasons,
     }
 

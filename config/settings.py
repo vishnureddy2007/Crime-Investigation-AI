@@ -84,14 +84,26 @@ COCO_WEAPON_CLASSES: set[str] = {"knife"}
 WEAPON_SCAN_CONF_THRESHOLD: float = 0.15
 
 # --- Two-stage weapon verification & thresholds -----------------------
-WEAPON_CONF_THRESHOLD: float = 0.30
-WEAPON_VERIFY_THRESHOLD: float = 0.45
-WEAPON_HIGH_CONF_THRESHOLD: float = 0.80
+WEAPON_CONF_THRESHOLD: float = 0.28
+WEAPON_VERIFY_THRESHOLD: float = 0.48
+WEAPON_HIGH_CONF_THRESHOLD: float = 0.78
+
+WEAPON_VERIFICATION_CONFIG: dict[str, Any] = {
+    "candidate_confidence": 0.28,
+    "verified_threshold": 0.48,
+    "high_confidence_override": 0.78,
+    "tiny_box_area_pixels": 25.0,
+    "tiny_box_rel_area": 0.0003,
+    "duplicate_iou_threshold": 0.35,
+    "duplicate_ios_threshold": 0.60,
+    "multi_scale_enabled": True,
+    "crop_padding_fraction": 0.15,
+}
 
 # IoU threshold for cross-model NMS dedup. If two detections from
 # different models overlap by more than this fraction, the
 # higher-confidence one wins.
-CROSS_MODEL_IOU_THRESHOLD: float = 0.40
+CROSS_MODEL_IOU_THRESHOLD: float = 0.35
 
 # --- Temporal video verification (Phase 47) ---------------------------
 # A candidate must appear in at least MIN_WEAPON_FRAMES distinct
