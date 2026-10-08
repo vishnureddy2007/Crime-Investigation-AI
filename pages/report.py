@@ -93,7 +93,7 @@ def render() -> None:
     # source_name) is enough to detect a re-render with identical
     # inputs and skip the auto-save hook, which would otherwise run
     # on every page reload.
-    new_summary_text = summary.primary_text if summary is not None else ""
+    new_summary_text = getattr(summary, "primary_text", getattr(summary, "investigation_summary", "")) if summary is not None else ""
     needs_rebuild = st.session_state.get("last_report_data") is None
     if not needs_rebuild:
         prev: ReportData = st.session_state["last_report_data"]

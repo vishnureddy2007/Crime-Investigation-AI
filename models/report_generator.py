@@ -39,8 +39,8 @@ def build_report_data(
     derives a `batch_totals` payload from the analysis itself.
     """
     if summary is not None:
-        summary_text = summary.primary_text
-        model_name = f"yolov8n | {summary.model_name}"
+        summary_text = getattr(summary, "primary_text", getattr(summary, "investigation_summary", ""))
+        model_name = f"yolov8n | {getattr(summary, 'model_name', 'local_engine')}"
     else:
         # Use a fresh template summary as a sensible default
         from models.summary_generator import build_template_summary

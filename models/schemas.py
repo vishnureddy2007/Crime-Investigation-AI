@@ -140,13 +140,18 @@ class DetailedNarrativeSummary:
     chronological_events: str
     detected_objects: str
     verified_findings: str
-    possible_findings: str
-    rejected_findings: str
-    potential_crime_activity: str
-    important_evidence: str
-    uncertainties: str
+    possible_findings: str = ""
+    rejected_findings: str = ""
+    potential_crime_activity: str = ""
+    important_evidence: str = ""
+    uncertainties: str = ""
     investigation_summary: str = ""
     summary_id: str = "sum_001"
+
+    @property
+    def primary_text(self) -> str:
+        """Returns the primary narrative text of this summary."""
+        return self.investigation_summary or self.case_overview or ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
