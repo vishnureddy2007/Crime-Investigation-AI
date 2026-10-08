@@ -233,12 +233,12 @@ def _render_summary_tab(analysis: EvidenceAnalysis | None) -> None:
                             "situation_analysis": situation_obj.as_dict() if hasattr(situation_obj, "as_dict") else str(situation_obj),
                             "scene_narrative": scene_narrative.as_dict() if hasattr(scene_narrative, "as_dict") else str(scene_narrative),
                             "model": "Qwen3-14B",
-                            "renderer": "Blender-FFmpeg-Pipeline-v1"
+                            "renderer": "2D-Forensic-Explanation-Pipeline-v2"
                         }
                         save_animation(DATABASE_PATH, case_id, str(video_path), payload)
 
-                    st.success("Professional 3D Reconstruction generated successfully!")
-                    st.session_state["nav_selection"] = "Reconstruction"
+                    st.success("Investigation Video generated successfully!")
+                    st.session_state["nav_selection"] = "Investigation Video"
                     st.rerun()
                 except Exception as exc:
                     st.error(f"Reconstruction failed: {exc}")

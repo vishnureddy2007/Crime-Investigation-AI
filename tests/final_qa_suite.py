@@ -78,7 +78,7 @@ def test_golden_path():
     renderer = AnimationRenderer()
     output_video = VIDEOS_DIR / f"qa_test_{case_id}.mp4"
     
-    print("Launching Blender & FFmpeg pipeline...")
+    print("Launching 2D Investigation Explanation Video pipeline...")
     try:
         renderer.render_animated_video(None, analysis, output_video) 
         print("Rendering complete")

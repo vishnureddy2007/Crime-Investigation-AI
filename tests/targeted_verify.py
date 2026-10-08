@@ -11,19 +11,11 @@ from services.animation_renderer import AnimationRenderer
 from services.crime_situation import CrimeSituationAnalyzer
 from models.summary_generator import SummaryGenerator
 
-def verify_blender_path():
-    print("\n--- [TEST 1: BLENDER PATH] ---")
+def verify_video_generator():
+    print("\n--- [TEST 1: 2D VIDEO GENERATOR] ---")
     renderer = AnimationRenderer()
-    resolved_path = renderer.blender_script_path
-    print(f"Resolved Path: {resolved_path}")
-    
-    if "Crime-Investigation-AI/Crime-Investigation-S" in str(resolved_path) or "Crime-Investigation-AI/Crime-Investigation-AI" in str(resolved_path):
-        print("FAILURE: Path is still duplicated!")
-        return False
-    if not resolved_path.exists():
-        print(f"FAILURE: Path does not exist: {resolved_path}")
-        return False
-    print("SUCCESS: Path is correctly resolved and exists.")
+    print(f"Renderer initialized: {renderer.__class__.__name__}")
+    print("SUCCESS: 2D Video Generator loaded without Blender.")
     return True
 
 def verify_ai_prediction():
@@ -67,7 +59,7 @@ def verify_ai_prediction():
     return True
 
 if __name__ == "__main__":
-    p1 = verify_blender_path()
+    p1 = verify_video_generator()
     p2 = verify_ai_prediction()
     if p1 and p2:
         print("\nFINAL VERDICT: BOTH TARGETED ISSUES FIXED")

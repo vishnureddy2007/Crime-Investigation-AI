@@ -114,6 +114,28 @@ CREATE TABLE IF NOT EXISTS human_reviews (
     FOREIGN KEY (analysis_id) REFERENCES analyses(analysis_id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT    UNIQUE NOT NULL,
+    password_hash TEXT    NOT NULL,
+    role          TEXT    NOT NULL DEFAULT 'INVESTIGATOR',
+    is_active     INTEGER NOT NULL DEFAULT 1,
+    created_at    TEXT    NOT NULL,
+    last_login    TEXT
+);
+
+CREATE TABLE IF NOT EXISTS investigation_videos (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    case_id          INTEGER NOT NULL,
+    evidence_version INTEGER NOT NULL DEFAULT 1,
+    video_path       TEXT    NOT NULL,
+    duration         REAL    NOT NULL DEFAULT 0.0,
+    status           TEXT    NOT NULL DEFAULT 'READY',
+    created_at       TEXT    NOT NULL,
+    updated_at       TEXT    NOT NULL,
+    FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS ix_human_reviews_case
     ON human_reviews(case_id, created_at);
 """
@@ -169,6 +191,10 @@ def init_db(path: Path) -> None:
             pass
         try:
             conn.execute("ALTER TABLE storyboards ADD COLUMN is_outdated INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE cases ADD COLUMN evidence_version INTEGER NOT NULL DEFAULT 1")
         except sqlite3.OperationalError:
             pass
 

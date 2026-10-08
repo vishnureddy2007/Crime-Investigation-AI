@@ -28,12 +28,17 @@ from models.schemas import (
 
 
 def mark_case_outdated(db_path: Path, case_id: int) -> None:
-    """Mark all summaries, reports, storyboards, and animations for a case as outdated."""
+    """Mark all summaries, reports, storyboards, animations, and investigation_videos for a case as outdated."""
     with get_connection(db_path) as conn:
         conn.execute("UPDATE summaries SET is_outdated = 1 WHERE case_id = ?", (case_id,))
         conn.execute("UPDATE reports SET is_outdated = 1 WHERE case_id = ?", (case_id,))
         conn.execute("UPDATE storyboards SET is_outdated = 1 WHERE case_id = ?", (case_id,))
         conn.execute("UPDATE animations SET is_outdated = 1 WHERE case_id = ?", (case_id,))
+        conn.execute("UPDATE investigation_videos SET status = 'OUTDATED' WHERE case_id = ?", (case_id,))
+        try:
+            conn.execute("UPDATE cases SET evidence_version = evidence_version + 1 WHERE case_id = ?", (case_id,))
+        except Exception:
+            pass
 
 
 def _now_iso() -> str:
@@ -168,14 +173,26 @@ def list_analyses_for_case(db_path: Path, case_id: int) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def get_latest_analysis(db_path: Path, case_id: int) -> dict[str, Any] | None:
+    """Fetch latest analysis row for a case."""
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM analyses WHERE case_id = ? ORDER BY analysis_id DESC LIMIT 1",
+            (case_id,),
+        ).fetchone()
+    return _row_to_dict(row)
+
+
 # ----------------------------------------------------------------------
 # summaries
 # ----------------------------------------------------------------------
 def save_summary(
-    db_path: Path, case_id: int, summary: InvestigationSummary,
+    db_path: Path, case_id: int, summary: Any,
 ) -> int:
-    payload = summary.as_dict()
+    payload = summary.as_dict() if hasattr(summary, "as_dict") else dict(summary)
     created_at = _now_iso()
+    model_name = getattr(summary, "model_name", "local_engine")
+    used_ai = int(bool(getattr(summary, "used_ai", False)))
     with get_connection(db_path) as conn:
         cur = conn.execute(
             "INSERT INTO summaries (case_id, payload_json, model_name, "
@@ -183,8 +200,8 @@ def save_summary(
             (
                 case_id,
                 _to_json(payload),
-                summary.model_name,
-                int(bool(summary.used_ai)),
+                model_name,
+                used_ai,
                 0,
                 created_at,
             ),
@@ -213,6 +230,16 @@ def list_summaries_for_case(db_path: Path, case_id: int) -> list[dict[str, Any]]
             (case_id,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_latest_summary(db_path: Path, case_id: int) -> dict[str, Any] | None:
+    """Fetch latest summary row for a case."""
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM summaries WHERE case_id = ? ORDER BY summary_id DESC LIMIT 1",
+            (case_id,),
+        ).fetchone()
+    return _row_to_dict(row)
 
 
 # ----------------------------------------------------------------------
@@ -669,3 +696,155 @@ def get_evidence_trends(db_path: Path) -> list[dict[str, Any]]:
         # Convert to sorted list
         sorted_dates = sorted(trends.keys())
         return [{"date": d, "labels": trends[d]} for d in sorted_dates]
+
+
+# ----------------------------------------------------------------------
+# Security & Authentication Repository
+# ----------------------------------------------------------------------
+
+import hashlib
+import secrets
+
+def hash_password(password: str) -> str:
+    """Hash a password using PBKDF2-HMAC-SHA256 with a random salt."""
+    salt = secrets.token_hex(16)
+    key = hashlib.pbkdf2_hmac(
+        'sha256',
+        password.encode('utf-8'),
+        salt.encode('utf-8'),
+        100000
+    )
+    return f"{salt}${key.hex()}"
+
+
+def verify_password(stored_password_hash: str, password_provided: str) -> bool:
+    """Verify a stored password hash against a cleartext password."""
+    if not stored_password_hash or not password_provided:
+        return False
+    try:
+        salt, key_hex = stored_password_hash.split('$', 1)
+        key_check = hashlib.pbkdf2_hmac(
+            'sha256',
+            password_provided.encode('utf-8'),
+            salt.encode('utf-8'),
+            100000
+        )
+        return secrets.compare_digest(key_check.hex(), key_hex)
+    except Exception:
+        return False
+
+
+def create_user(
+    db_path: Path,
+    username: str,
+    password_hash: str,
+    role: str = "INVESTIGATOR",
+    is_active: bool = True
+) -> int:
+    """Create a new user account. Returns user id."""
+    created_at = _now_iso()
+    with get_connection(db_path) as conn:
+        cur = conn.execute(
+            "INSERT INTO users (username, password_hash, role, is_active, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (username.strip(), password_hash, role.upper(), 1 if is_active else 0, created_at),
+        )
+        return int(cur.lastrowid)
+
+
+def get_user_by_username(db_path: Path, username: str) -> dict[str, Any] | None:
+    """Fetch user record by username."""
+    with get_connection(db_path) as conn:
+        row = conn.execute("SELECT * FROM users WHERE username = ?", (username.strip(),)).fetchone()
+    return _row_to_dict(row)
+
+
+def get_user_by_id(db_path: Path, user_id: int) -> dict[str, Any] | None:
+    """Fetch user record by user id."""
+    with get_connection(db_path) as conn:
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    return _row_to_dict(row)
+
+
+def list_all_users(db_path: Path) -> list[dict[str, Any]]:
+    """List all user accounts."""
+    with get_connection(db_path) as conn:
+        rows = conn.execute("SELECT id, username, role, is_active, created_at, last_login FROM users ORDER BY created_at DESC").fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_user_last_login(db_path: Path, user_id: int) -> None:
+    """Update user's last_login timestamp."""
+    with get_connection(db_path) as conn:
+        conn.execute("UPDATE users SET last_login = ? WHERE id = ?", (_now_iso(), user_id))
+
+
+def update_user_status(db_path: Path, user_id: int, is_active: bool) -> None:
+    """Enable or disable user account."""
+    with get_connection(db_path) as conn:
+        conn.execute("UPDATE users SET is_active = ? WHERE id = ?", (1 if is_active else 0, user_id))
+
+
+def delete_user(db_path: Path, user_id: int) -> None:
+    """Delete a user account."""
+    with get_connection(db_path) as conn:
+        conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+
+
+def count_users(db_path: Path) -> int:
+    """Count total users in DB."""
+    with get_connection(db_path) as conn:
+        row = conn.execute("SELECT COUNT(*) as cnt FROM users").fetchone()
+    return int(row["cnt"]) if row else 0
+
+
+def get_case_evidence_version(db_path: Path, case_id: int) -> int:
+    """Get the current evidence version for a case."""
+    with get_connection(db_path) as conn:
+        row = conn.execute("SELECT evidence_version FROM cases WHERE case_id = ?", (case_id,)).fetchone()
+    if row and row["evidence_version"] is not None:
+        return int(row["evidence_version"])
+    return 1
+
+
+# ----------------------------------------------------------------------
+# Investigation Videos Repository
+# ----------------------------------------------------------------------
+
+def save_investigation_video(
+    db_path: Path,
+    case_id: int,
+    evidence_version: int,
+    video_path: str,
+    duration: float,
+    status: str = "READY"
+) -> int:
+    """Insert or update an investigation_videos record for a case."""
+    now = _now_iso()
+    with get_connection(db_path) as conn:
+        # Deactivate older videos for this case
+        conn.execute("UPDATE investigation_videos SET status = 'OUTDATED' WHERE case_id = ?", (case_id,))
+        cur = conn.execute(
+            "INSERT INTO investigation_videos "
+            "(case_id, evidence_version, video_path, duration, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (case_id, evidence_version, video_path, duration, status, now, now)
+        )
+        return int(cur.lastrowid)
+
+
+def get_latest_investigation_video(db_path: Path, case_id: int) -> dict[str, Any] | None:
+    """Get the latest investigation video record for a case."""
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM investigation_videos WHERE case_id = ? ORDER BY id DESC LIMIT 1",
+            (case_id,)
+        ).fetchone()
+    return _row_to_dict(row)
+
+
+def delete_investigation_video(db_path: Path, video_id: int) -> None:
+    """Delete an investigation video record."""
+    with get_connection(db_path) as conn:
+        conn.execute("DELETE FROM investigation_videos WHERE id = ?", (video_id,))
+
