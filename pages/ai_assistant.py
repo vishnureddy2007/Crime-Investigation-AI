@@ -18,8 +18,7 @@ from models.schemas import EvidenceAnalysis
 
 def render() -> None:
     render_page_header(
-        "💬",
-        title="AI Assistant",
+        title="💬 AI Assistant",
         subtitle="Ask questions regarding evidence, weapon verifications, and investigation analysis.",
     )
 

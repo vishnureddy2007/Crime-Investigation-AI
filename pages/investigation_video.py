@@ -28,8 +28,7 @@ from services.investigation_video_generator import InvestigationVideoGenerator
 
 def render() -> None:
     render_page_header(
-        "🎥",
-        title="Investigation Video",
+        title="🎥 Investigation Video",
         subtitle="Generate, preview, and export 2D forensic investigation explanation videos.",
     )
 

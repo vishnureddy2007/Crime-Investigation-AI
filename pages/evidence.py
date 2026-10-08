@@ -21,8 +21,7 @@ from pages._layout import empty_state, render_page_header
 
 def render() -> None:
     render_page_header(
-        "🔍",
-        title="Evidence Gallery",
+        title="🔍 Evidence Gallery",
         subtitle="Catalog and inspect uploaded crime scene evidence, detected persons, and verified weapons.",
     )
 
