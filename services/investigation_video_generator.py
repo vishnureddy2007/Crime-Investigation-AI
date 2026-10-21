@@ -41,6 +41,9 @@ from database.repository import (
     save_investigation_video,
     _from_json,
 )
+from core.logging import get_logger
+
+log = get_logger(__name__)
 
 
 @dataclass
@@ -161,7 +164,8 @@ class InvestigationVideoGenerator:
             try:
                 import json
                 analysis_payload = json.loads(analysis_payload)
-            except Exception:
+            except (json.JSONDecodeError, ValueError, TypeError) as exc:
+                log.warning("Could not parse analysis_payload for case %s: %s", case_id, exc)
                 analysis_payload = {}
 
         summary_payload = db_summary.get("payload_json") if db_summary else {}
@@ -169,7 +173,8 @@ class InvestigationVideoGenerator:
             try:
                 import json
                 summary_payload = json.loads(summary_payload)
-            except Exception:
+            except (json.JSONDecodeError, ValueError, TypeError) as exc:
+                log.warning("Could not parse summary_payload for case %s: %s", case_id, exc)
                 summary_payload = {}
 
         # Case title / source
@@ -543,8 +548,8 @@ class InvestigationVideoGenerator:
                     pil_img = Image.fromarray(frame_rgb)
                     frames.append((ts_sec, pil_img))
             cap.release()
-        except Exception:
-            pass
+        except (cv2.error, OSError, ValueError, RuntimeError) as exc:
+            log.warning("Could not extract frames from %s: %s", video_path, exc)
 
         return frames
 
@@ -612,7 +617,8 @@ class InvestigationVideoGenerator:
             try:
                 pil_img = Image.open(scene.image_path)
                 pil_img = ImageOps.exif_transpose(pil_img).convert("RGB")
-            except Exception:
+            except (OSError, ValueError, RuntimeError) as exc:
+                log.warning("Could not load scene image %s: %s", scene.image_path, exc)
                 pil_img = None
 
         if pil_img is None:

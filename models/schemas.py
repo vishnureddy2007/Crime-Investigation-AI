@@ -35,7 +35,24 @@ class Detection:
     confidence: float
     bbox: BoundingBox
     source: str = "general"
-    weapon_status: str = ""  # "verified" | "candidate" | ""
+    weapon_status: str = ""  # "verified" | "candidate" | "rejected" | ""
+    verification_reason: str = ""
+
+    @property
+    def x1(self) -> float:
+        return self.bbox.x1
+
+    @property
+    def y1(self) -> float:
+        return self.bbox.y1
+
+    @property
+    def x2(self) -> float:
+        return self.bbox.x2
+
+    @property
+    def y2(self) -> float:
+        return self.bbox.y2
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -45,6 +62,7 @@ class Detection:
             "bbox": {"x1": self.bbox.x1, "y1": self.bbox.y1, "x2": self.bbox.x2, "y2": self.bbox.y2},
             "source": self.source,
             "weapon_status": self.weapon_status,
+            "verification_reason": self.verification_reason,
         }
 
 
@@ -63,6 +81,9 @@ class DetectionResult:
     verified_weapons: list[Detection] = field(default_factory=list)
     rejected_detections: list[Detection] = field(default_factory=list)
     uncertain_detections: list[Detection] = field(default_factory=list)
+    model_version: str = ""
+    model_weights: dict[str, str] = field(default_factory=dict)
+    config_metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
     def count(self) -> int:
@@ -84,6 +105,14 @@ class DetectionResult:
         if not self.detections:
             return 0.0
         return sum(d.confidence for d in self.detections) / len(self.detections)
+
+    @property
+    def raw_detections_count(self) -> int:
+        return len(self.raw_detections) if self.raw_detections else len(self.detections)
+
+    @property
+    def rejected_count(self) -> int:
+        return len(self.rejected_detections)
 
 
 @dataclass
@@ -107,6 +136,14 @@ class EvidenceAnalysis:
     weapon_count: int
     frame_count: int
     timestamp: datetime = field(default_factory=datetime.now)
+    model_name: str = "yolov8n"
+    model_version: str = ""
+    model_weights: dict[str, str] = field(default_factory=dict)
+    config_metadata: dict[str, Any] = field(default_factory=dict)
+    raw_detections_count: int = 0
+    rejected_count: int = 0
+    human_decisions: dict[str, str] = field(default_factory=dict)
+    detections: list[Detection] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -129,6 +166,14 @@ class EvidenceAnalysis:
             "weapon_count": self.weapon_count,
             "frame_count": self.frame_count,
             "timestamp": self.timestamp.isoformat(),
+            "model_name": self.model_name,
+            "model_version": self.model_version,
+            "model_weights": self.model_weights,
+            "config_metadata": self.config_metadata,
+            "raw_detections_count": self.raw_detections_count,
+            "rejected_count": self.rejected_count,
+            "human_decisions": self.human_decisions,
+            "detections": [d.as_dict() for d in self.detections],
         }
 
 
@@ -298,6 +343,9 @@ class VideoAnalysisResult:
     metadata: dict[str, Any] = field(default_factory=dict)
     keyframe_indices: list[int] = field(default_factory=list)
     model_name: str = "unknown"
+    model_version: str = ""
+    model_weights: dict[str, str] = field(default_factory=dict)
+    config_metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
     def frame_count(self) -> int:
@@ -386,6 +434,12 @@ class ReportData:
     human_confirmed_count: int = 0
     human_rejected_count: int = 0
     human_pending_count: int = 0
+    model_version: str = ""
+    model_weights: dict[str, str] | str = field(default_factory=dict)
+    config_metadata: dict[str, Any] = field(default_factory=dict)
+    raw_detections_count: int = 0
+    rejected_count: int = 0
+    human_decisions: dict[str, str] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -395,6 +449,12 @@ class ReportData:
             "source_name": self.source_name,
             "source_type": self.source_type,
             "model_name": self.model_name,
+            "model_version": self.model_version,
+            "model_weights": self.model_weights,
+            "config_metadata": self.config_metadata,
+            "raw_detections_count": self.raw_detections_count,
+            "rejected_count": self.rejected_count,
+            "human_decisions": self.human_decisions,
             "summary_text": self.summary_text,
             "severity_score": self.severity_score,
             "severity_level": self.severity_level,
@@ -491,6 +551,13 @@ class AnalysisInput:
     average_confidence: float
     source_type: str = "image"
     frame_count: int = 1
+    model_name: str = "yolov8n"
+    model_version: str = ""
+    model_weights: dict[str, str] = field(default_factory=dict)
+    config_metadata: dict[str, Any] = field(default_factory=dict)
+    raw_detections_count: int = 0
+    rejected_count: int = 0
+    human_decisions: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_image(cls, detection_result: DetectionResult) -> "AnalysisInput":
@@ -501,26 +568,42 @@ class AnalysisInput:
             average_confidence=detection_result.average_confidence(),
             source_type="image",
             frame_count=1,
+            model_name=detection_result.model_name,
+            model_version=detection_result.model_version,
+            model_weights=dict(detection_result.model_weights),
+            config_metadata=dict(detection_result.config_metadata),
+            raw_detections_count=detection_result.raw_detections_count,
+            rejected_count=detection_result.rejected_count,
         )
 
     @classmethod
     def from_video(cls, video_result: VideoAnalysisResult) -> "AnalysisInput":
         """Create AnalysisInput from a VideoAnalysisResult."""
-        # Calculate overall average confidence across all frames with detections
         total_conf = 0.0
         total_dets = 0
+        raw_count = 0
+        rejected_count = 0
         for fr in video_result.frame_results:
             if fr.detection and fr.detection.detections:
                 total_conf += sum(d.confidence for d in fr.detection.detections)
                 total_dets += len(fr.detection.detections)
+            if fr.detection:
+                raw_count += fr.detection.raw_count
+                rejected_count += len(fr.detection.rejected_detections)
         avg_conf = total_conf / total_dets if total_dets > 0 else 0.0
-        
+
         return cls(
             source_name=video_result.source_name,
             counts_by_label=video_result.aggregate_counts_by_label(),
             average_confidence=avg_conf,
             source_type="video",
             frame_count=video_result.frame_count,
+            model_name=video_result.model_name,
+            model_version=video_result.model_version,
+            model_weights=dict(video_result.model_weights),
+            config_metadata=dict(video_result.config_metadata),
+            raw_detections_count=raw_count,
+            rejected_count=rejected_count,
         )
 
 

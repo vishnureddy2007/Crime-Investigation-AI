@@ -43,9 +43,13 @@ models/yolo*/
 outputs/reports/*.pdf
 outputs/reports/*.docx
 outputs/videos/*.mp4
+outputs/videos/**/*.mp4
+Crime-Investigation-AI/tests/animation_test_data/investigation_video_*.mp4
+Crime_Scene_AI_Research_Paper_Draft.docx
 outputs/storyboard/*.png
 outputs/storyboard/*.jpg
 outputs/storyboard/*.jpeg
+
 
 # ---------- Logs ----------
 *.log

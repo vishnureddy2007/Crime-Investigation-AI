@@ -30,12 +30,23 @@ from config import (
     MIN_AVERAGE_WEAPON_CONFIDENCE,
     MIN_WEAPON_FRAMES,
     WEAPON_CANDIDATE_LABELS,
+    WEAPON_VERIFY_THRESHOLD,
+    get_weights_sha256,
 )
 from models.schemas import DetectionResult, FrameResult, VideoAnalysisResult
 from models.weapon_verifier import (
     apply_to_detections as _verify_detections,
 )
 from utils.frame_utils import cv2_to_pil
+
+
+def _bbox_iou(a: Any, b: Any) -> float:
+    """Intersection over union for two detection boxes."""
+    x1, y1 = max(a.x1, b.x1), max(a.y1, b.y1)
+    x2, y2 = min(a.x2, b.x2), min(a.y2, b.y2)
+    inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+    union = a.area + b.area - inter
+    return inter / union if union > 0 else 0.0
 
 
 class VideoProcessor:
@@ -158,13 +169,29 @@ class VideoProcessor:
         if promoted:
             metadata["temporal_weapon_promotions"] = promoted
 
+        m_name = getattr(self.detector, "model_name", "unknown")
+        weights_map = {}
+        if hasattr(self.detector, "general"):
+            gen_name = getattr(self.detector.general, "model_name", "yolov8n.pt")
+            weights_map[gen_name] = get_weights_sha256(gen_name)
+        elif m_name != "unknown":
+            weights_map[m_name] = get_weights_sha256(m_name)
+
+        config_meta = {
+            "frame_interval_sec": self.frame_interval_sec,
+            "keyframe_count": self.keyframe_count,
+        }
+
         return VideoAnalysisResult(
             source_name=source_name,
             timestamp=datetime.now(),
             metadata=metadata,
             frame_results=frame_results,
             keyframe_indices=keyframe_indices,
-            model_name=getattr(self.detector, "model_name", "unknown"),
+            model_name=m_name,
+            model_version="video-yolov8n",
+            model_weights=weights_map,
+            config_metadata=config_meta,
         )
 
     # ------------------------------------------------------------------
@@ -230,43 +257,76 @@ def _apply_temporal_weapon_verification(
     if not frame_results:
         return {}
 
-    # 1) Collect per-label hit lists: { label: [(ts, conf), ...] }
-    hits: dict[str, list[tuple[float, float]]] = {}
+    # 1) Build spatial tracks per label so separate objects with the same
+    # label cannot verify each other merely by appearing in the same clip.
+    # At most one observation per physical object is counted per sampled frame.
+    hits: dict[str, list[list[tuple[float, float, Any, str]]]] = {}
     for fr in frame_results:
         if fr.detection is None:
             continue
-        for d in fr.detection.detections:
-            if d.label in WEAPON_CANDIDATE_LABELS:
-                hits.setdefault(d.label, []).append((fr.timestamp_sec, d.confidence))
+        frame_weapons: list[Any] = [
+            d for d in fr.detection.detections if d.label in WEAPON_CANDIDATE_LABELS
+        ]
+        # Sort descending by confidence so the best box matches first
+        frame_weapons.sort(key=lambda item: item.confidence, reverse=True)
+
+        for d in frame_weapons:
+            tracks = hits.setdefault(d.label, [])
+            best_track, best_iou = None, 0.0
+            for idx, track in enumerate(tracks):
+                last_ts, _, last_bbox, _ = track[-1]
+                # A track can receive at most one box from this frame
+                if last_ts == fr.timestamp_sec:
+                    continue
+                if fr.timestamp_sec - last_ts > max_frame_gap_sec:
+                    continue
+                overlap = _bbox_iou(d.bbox, last_bbox)
+                if overlap > best_iou:
+                    best_track, best_iou = idx, overlap
+
+            status_str = getattr(d, "weapon_status", "") or ""
+            if best_track is not None and best_iou >= 0.30:
+                tracks[best_track].append((fr.timestamp_sec, d.confidence, d.bbox, status_str))
+            else:
+                tracks.append([(fr.timestamp_sec, d.confidence, d.bbox, status_str)])
 
     promotions: dict[str, dict[str, Any]] = {}
 
     # 2) For each label, find longest qualifying run.
-    for label, points in hits.items():
-        if not points:
-            continue
-        points.sort(key=lambda t: t[0])
-        run_start = 0
-        best_run: tuple[int, int] = (0, 0)  # inclusive-exclusive
-        for i in range(len(points)):
-            # Window from points[run_start] to points[i]
-            while (run_start < i
-                   and points[i][0] - points[run_start][0] > max_frame_gap_sec):
-                run_start += 1
-            win_len = i - run_start + 1
-            if win_len > best_run[1] - best_run[0]:
-                best_run = (run_start, run_start + win_len)
-        start, end = best_run
-        length = end - start
-        if length >= min_frames:
-            avg_conf = sum(points[i][1] for i in range(start, end)) / length
-            if avg_conf >= min_avg_confidence:
-                promotions[label] = {
-                    "frames": length,
-                    "avg_confidence": round(avg_conf, 3),
-                    "span_sec": round(points[end - 1][0] - points[start][0], 2),
-                }
-                _promote_frames(frame_results, label, points[start:end])
+    for label, tracks in hits.items():
+        for points in tracks:
+            if not points:
+                continue
+            run_start = 0
+            best_run: tuple[int, int] = (0, 0)  # inclusive-exclusive
+            for i in range(len(points)):
+                while (run_start < i and points[i][0] - points[run_start][0] > max_frame_gap_sec):
+                    run_start += 1
+                win_len = i - run_start + 1
+                if win_len > best_run[1] - best_run[0]:
+                    best_run = (run_start, run_start + win_len)
+            start, end = best_run
+            length = end - start
+            if length >= min_frames:
+                avg_conf = sum(points[i][1] for i in range(start, end)) / length
+                run_statuses = {points[i][3] for i in range(start, end)}
+
+                # Requirement 4: Never verify a weapon from temporal persistence alone.
+                # Must have frame-level visual evidence (conf >= WEAPON_VERIFY_THRESHOLD or status == "verified")
+                # and must not contain rejected detections.
+                has_frame_evidence = any(
+                    points[i][1] >= WEAPON_VERIFY_THRESHOLD or points[i][3] == "verified"
+                    for i in range(start, end)
+                )
+                is_rejected = any(points[i][3] == "rejected" for i in range(start, end))
+
+                if avg_conf >= min_avg_confidence and has_frame_evidence and not is_rejected:
+                    promotions[label] = {
+                        "frames": length,
+                        "avg_confidence": round(avg_conf, 3),
+                        "span_sec": round(points[end - 1][0] - points[start][0], 2),
+                    }
+                    _promote_frames(frame_results, label, points[start:end])
 
     return promotions
 
@@ -274,25 +334,25 @@ def _apply_temporal_weapon_verification(
 def _promote_frames(
     frame_results: list[FrameResult],
     label: str,
-    points: list[tuple[float, float]],
+    points: list[tuple[float, float, Any, str]],
 ) -> None:
     """
-    For the supplied list of (timestamp, confidence) hits, walk the
-    frames and re-label matching detections from ``candidate_weapon``
-    to ``weapon`` and from ``"candidate"`` to ``"verified"``.
-
-    Detection objects are immutable dataclasses, so we rebuild the
-    DetectionResult with a new list.
+    For the supplied list of (timestamp, confidence, bbox, status) hits,
+    walk the frames and re-label matching detections from candidate to verified.
     """
-    ts_to_label = {round(ts, 2) for ts, _ in points}
+    targets = [(round(p[0], 2), p[2]) for p in points]
     for fr in frame_results:
         if fr.detection is None:
             continue
-        if round(fr.timestamp_sec, 2) not in ts_to_label:
-            continue
         new_dets = []
         for d in fr.detection.detections:
-            if d.label == label and (
+            matching_target = next(
+                (bbox for ts, bbox in targets
+                 if ts == round(fr.timestamp_sec, 2)
+                 and _bbox_iou(d.bbox, bbox) >= 0.30),
+                None,
+            )
+            if d.label == label and matching_target is not None and (
                 getattr(d, "weapon_status", "") in ("candidate", "")
                 or d.label == label
             ):
@@ -300,15 +360,29 @@ def _promote_frames(
                 new_dets.append(replace(d, label="weapon", weapon_status="verified"))
             else:
                 new_dets.append(d)
+
+        orig_d = fr.detection
+        verified_w = [d for d in new_dets if getattr(d, "weapon_status", "") == "verified"]
+        candidates_w = [d for d in new_dets if getattr(d, "weapon_status", "") == "candidate"]
+        rejected_w = [d for d in new_dets if getattr(d, "weapon_status", "") == "rejected"]
+
         fr.detection = DetectionResult(
-            source_name=fr.detection.source_name,
-            timestamp=fr.detection.timestamp,
+            source_name=orig_d.source_name,
+            timestamp=orig_d.timestamp,
             detections=new_dets,
-            raw_count=fr.detection.raw_count,
-            annotated_image=fr.detection.annotated_image,
-            model_name=fr.detection.model_name,
-            source_tag=fr.detection.source_tag,
-            models_used=list(fr.detection.models_used),
+            raw_count=orig_d.raw_count,
+            annotated_image=orig_d.annotated_image,
+            model_name=orig_d.model_name,
+            source_tag=orig_d.source_tag,
+            models_used=list(orig_d.models_used),
+            raw_detections=list(orig_d.raw_detections or new_dets),
+            weapon_candidates=candidates_w,
+            verified_weapons=verified_w,
+            rejected_detections=rejected_w,
+            uncertain_detections=candidates_w,
+            model_version=orig_d.model_version,
+            model_weights=dict(orig_d.model_weights),
+            config_metadata=dict(orig_d.config_metadata),
         )
 
 
@@ -364,39 +438,66 @@ def consolidate_video_events(
     if not frame_results:
         return []
 
-    # Group (timestamp, confidence, status) by label.
-    by_label: dict[str, list[tuple[float, float, str]]] = {}
+    # Build short-lived tracks per label. Label-only grouping incorrectly
+    # combined separate objects and counted duplicate boxes in a frame as
+    # separate observations. Greedy IoU matching keeps one observation per
+    # object per sampled frame without introducing an external tracker.
+    by_label: dict[str, list[list[tuple[float, float, str, Any]]]] = {}
     for fr in frame_results:
         if fr.detection is None:
             continue
+        frame_labels: dict[str, list[Any]] = {}
         for d in fr.detection.detections:
-            by_label.setdefault(d.label, []).append(
-                (fr.timestamp_sec, d.confidence, getattr(d, "weapon_status", "") or "")
-            )
+            frame_labels.setdefault(d.label, []).append(d)
+        for label, detections in frame_labels.items():
+            tracks = by_label.setdefault(label, [])
+            # A track can receive at most one box from this frame.
+            available = set(range(len(tracks)))
+            for detection in sorted(detections, key=lambda item: item.confidence, reverse=True):
+                best_track, best_iou = None, 0.0
+                for track_idx in available:
+                    last_ts, _, _, last_detection = tracks[track_idx][-1]
+                    if fr.timestamp_sec - last_ts > max_frame_gap_sec:
+                        continue
+                    overlap = _bbox_iou(detection.bbox, last_detection.bbox)
+                    if overlap > best_iou:
+                        best_track, best_iou = track_idx, overlap
+                point = (fr.timestamp_sec, detection.confidence,
+                         getattr(detection, "weapon_status", "") or "", detection)
+                if best_track is not None and best_iou >= 0.30:
+                    tracks[best_track].append(point)
+                    available.remove(best_track)
+                else:
+                    tracks.append([point])
 
     events: list[VideoEvent] = []
-    for label, points in by_label.items():
-        if not points:
-            continue
-        points.sort(key=lambda t: t[0])
-        # Find runs: contiguous windows where consecutive timestamps
-        # differ by no more than max_frame_gap_sec.
-        runs: list[list[tuple[float, float, str]]] = [[points[0]]]
-        for prev, cur in zip(points, points[1:]):
-            if cur[0] - prev[0] <= max_frame_gap_sec:
-                runs[-1].append(cur)
-            else:
-                runs.append([cur])
-        for run in runs:
+    for label, tracks in by_label.items():
+        for run in tracks:
             if len(run) < min_frames:
                 continue
             avg_conf = sum(p[1] for p in run) / len(run)
-            status = "verified" if avg_conf >= min_avg_confidence else "candidate"
+            statuses = {p[2] for p in run}
+            # Only call weapon events verified if supported by frame-level evidence or verified detections.
+            # Requirement 4: Persistence alone is never proof of a weapon.
+            is_weapon = label.lower() in {name.lower() for name in WEAPON_CANDIDATE_LABELS}
+            if is_weapon:
+                has_frame_evidence = any(
+                    p[1] >= WEAPON_VERIFY_THRESHOLD or p[2] == "verified"
+                    for p in run
+                )
+                is_rejected = any(p[2] == "rejected" for p in run)
+                status = (
+                    "verified"
+                    if (avg_conf >= min_avg_confidence and has_frame_evidence and not is_rejected)
+                    else "candidate"
+                )
+            else:
+                status = "verified" if avg_conf >= min_avg_confidence else "candidate"
             events.append(
                 VideoEvent(
                     label=label,
-                    start_sec=round(run[0][0], 2),
-                    end_sec=round(run[-1][0], 2),
+                    start_sec=round(min(p[0] for p in run), 2),
+                    end_sec=round(max(p[0] for p in run), 2),
                     frame_count=len(run),
                     avg_confidence=round(avg_conf, 3),
                     status=status,

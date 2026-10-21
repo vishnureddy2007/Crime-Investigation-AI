@@ -13,12 +13,16 @@ payload.
 from __future__ import annotations
 
 import json
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from core.logging import get_logger
 from database.db import _row_to_dict, get_connection
+
+log = get_logger(__name__)
 from models.schemas import (
     EvidenceAnalysis,
     InvestigationSummary,
@@ -37,8 +41,8 @@ def mark_case_outdated(db_path: Path, case_id: int) -> None:
         conn.execute("UPDATE investigation_videos SET status = 'OUTDATED' WHERE case_id = ?", (case_id,))
         try:
             conn.execute("UPDATE cases SET evidence_version = evidence_version + 1 WHERE case_id = ?", (case_id,))
-        except Exception:
-            pass
+        except sqlite3.Error as exc:
+            log.warning("Could not increment evidence_version for case %s: %s", case_id, exc)
 
 
 def _now_iso() -> str:
@@ -730,7 +734,8 @@ def verify_password(stored_password_hash: str, password_provided: str) -> bool:
             100000
         )
         return secrets.compare_digest(key_check.hex(), key_hex)
-    except Exception:
+    except (ValueError, TypeError, AttributeError) as exc:
+        log.warning("Password verification failed with invalid stored hash: %s", exc)
         return False
 
 
@@ -919,7 +924,8 @@ def list_case_evidence_items(db_path: Path, case_id: int) -> list[dict[str, Any]
         if item.get("payload_json"):
             try:
                 item["payload"] = _from_json(item["payload_json"])
-            except Exception:
+            except (json.JSONDecodeError, ValueError, TypeError) as exc:
+                log.warning("Corrupt payload_json for evidence item %s: %s", item.get("id"), exc)
                 item["payload"] = {}
         results.append(item)
     return results

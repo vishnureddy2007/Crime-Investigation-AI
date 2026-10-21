@@ -10,10 +10,13 @@ from __future__ import annotations
 
 import streamlit as st
 from config import DATABASE_PATH
+from core.logging import get_logger
 from database.repository import list_cases, get_latest_analysis, get_latest_summary
 from pages._layout import empty_state, render_page_header
 from services.chat_assistant import ChatAssistant
 from models.schemas import EvidenceAnalysis
+
+log = get_logger(__name__)
 
 
 def render() -> None:
@@ -44,8 +47,8 @@ def render() -> None:
         try:
             payload = json.loads(db_analysis["payload_json"])
             analysis_obj = EvidenceAnalysis.from_dict(payload)
-        except Exception:
-            pass
+        except (json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
+            log.warning("Could not load case %s analysis payload: %s", case_id, exc)
 
     # Chat history state
     if "chat_history" not in st.session_state:

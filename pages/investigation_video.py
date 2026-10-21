@@ -13,6 +13,7 @@ import streamlit as st
 
 from config import DATABASE_PATH, VIDEOS_DIR
 from core.icons import ICON_RECONSTRUCTION
+from core.logging import get_logger
 from database.repository import (
     delete_investigation_video,
     get_case_evidence_version,
@@ -24,6 +25,8 @@ from models.schemas import EvidenceAnalysis
 from pages._layout import empty_state, friendly_error, render_page_header
 from pages._state import resolve_active_analysis, resolve_batch_or_detection_image
 from services.investigation_video_generator import InvestigationVideoGenerator
+
+log = get_logger(__name__)
 
 
 def render() -> None:
@@ -171,8 +174,8 @@ def render() -> None:
                 if video_rec.get("video_path") and Path(video_rec["video_path"]).exists():
                     try:
                         Path(video_rec["video_path"]).unlink()
-                    except Exception:
-                        pass
+                    except OSError as exc:
+                        log.warning("Could not unlink video file %s: %s", video_rec["video_path"], exc)
                 st.success("Video deleted.")
                 st.rerun()
 

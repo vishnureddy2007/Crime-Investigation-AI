@@ -150,6 +150,11 @@ def build_combined_analysis(
     )
     observations = [summary_line] + observations
 
+    model_versions = sorted({inp.model_version for inp in inputs if getattr(inp, "model_version", None)})
+    model_weights_set = sorted({inp.model_weights for inp in inputs if getattr(inp, "model_weights", None)})
+    total_raw = sum(getattr(inp, "raw_detections_count", 0) for inp in inputs)
+    total_rejected = sum(getattr(inp, "rejected_count", 0) for inp in inputs)
+
     return EvidenceAnalysis(
         source_name=f"combined ({len(inputs)} file(s))",
         source_type="batch",
@@ -170,6 +175,11 @@ def build_combined_analysis(
         has_threat=verified_weapon_count > 0,
         frame_count=total_frames,
         timestamp=datetime.now(),
+        model_version=", ".join(model_versions) if model_versions else "YOLOv8-audited",
+        model_weights=", ".join(model_weights_set) if model_weights_set else "MS-COCO / Audited Weapons",
+        raw_detections_count=total_raw,
+        rejected_count=total_rejected,
+        config_metadata={"inputs": len(inputs), "total_files": total_files},
     )
 
 

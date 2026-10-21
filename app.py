@@ -161,7 +161,7 @@ def _render_page(page: str) -> None:
         "AI Insights":         ("pages.ai_insights",          "render"),
         "Reports":             ("pages.report",               "render"),
         "Investigation Video": ("pages.investigation_video",  "render"),
-        "Reconstruction":      ("pages.investigation_video",  "render"),
+        "Reconstruction":      ("pages.reconstruction",       "render"),
         "AI Assistant":        ("pages.ai_assistant",         "render"),
         "Link Analysis":       ("pages.link_analysis",        "render"),
         "Settings & System":   ("pages.settings",             "render"),

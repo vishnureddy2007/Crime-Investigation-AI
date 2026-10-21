@@ -76,6 +76,12 @@ def build_report_data(
         human_confirmed_count=human_stats.get("human_confirmed_count", 0) if human_stats else 0,
         human_rejected_count=human_stats.get("human_rejected_count", 0) if human_stats else 0,
         human_pending_count=human_stats.get("human_pending_count", 0) if human_stats else 0,
+        model_version=getattr(analysis, "model_version", "YOLOv8-audited"),
+        model_weights=getattr(analysis, "model_weights", ""),
+        config_metadata=getattr(analysis, "config_metadata", {}),
+        raw_detections_count=getattr(analysis, "raw_detections_count", 0),
+        rejected_count=getattr(analysis, "rejected_count", 0),
+        human_decisions=getattr(analysis, "human_decisions", []),
     )
 
 
@@ -197,13 +203,29 @@ class PDFReportGenerator:
 
         # 1. Source info
         story.append(Paragraph("1. Source Information", self._styles["ReportH2"]))
+        model_ver = getattr(data, "model_version", "")
+        model_str = f"{data.model_name} (version: {model_ver})" if model_ver else data.model_name
+        source_rows = [
+            ["Source file",   data.source_name],
+            ["Source type",   data.source_type],
+            ["Model used",    model_str],
+        ]
+        mw = getattr(data, "model_weights", None)
+        if mw:
+            if isinstance(mw, dict):
+                short_w = ", ".join(f"{k}: {v[:8]}..." for k, v in mw.items())
+            else:
+                short_w = str(mw)
+                if len(short_w) > 40:
+                    short_w = short_w[:37] + "..."
+            source_rows.append(["Model weights / hash", short_w])
+        raw_cnt = getattr(data, "raw_detections_count", 0)
+        rej_cnt = getattr(data, "rejected_count", 0)
+        if raw_cnt or rej_cnt:
+            source_rows.append(["Detection audit", f"Raw: {raw_cnt} | Verified weapons: {data.weapon_count} | Rejected: {rej_cnt}"])
         source_table = Table(
-            [
-                ["Source file",   data.source_name],
-                ["Source type",   data.source_type],
-                ["Model used",    data.model_name],
-            ],
-            colWidths=[4 * cm, 12 * cm],
+            source_rows,
+            colWidths=[5 * cm, 11 * cm],
         )
         source_table.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (0, -1), colors.lightgrey),
@@ -361,7 +383,16 @@ class DOCXReportGenerator:
 
         # 1. Source
         doc.add_heading("1. Source Information", level=1)
-        doc.add_paragraph(f"Model used: {data.model_name}")
+        model_ver = getattr(data, "model_version", "")
+        model_str = f"{data.model_name} (version: {model_ver})" if model_ver else data.model_name
+        doc.add_paragraph(f"Model used: {model_str}")
+        mw = getattr(data, "model_weights", None)
+        if mw:
+            doc.add_paragraph(f"Model weights signature: {mw}")
+        raw_cnt = getattr(data, "raw_detections_count", 0)
+        rej_cnt = getattr(data, "rejected_count", 0)
+        if raw_cnt or rej_cnt:
+            doc.add_paragraph(f"Detection audit: Raw={raw_cnt}, Verified Weapons={data.weapon_count}, Rejected={rej_cnt}")
 
         # 2. Executive summary
         doc.add_heading("2. Executive Summary", level=1)

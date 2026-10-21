@@ -11,12 +11,16 @@ from pathlib import Path
 import streamlit as st
 
 from config import DATABASE_PATH
+from core.logging import get_logger
 from database.repository import (
     get_latest_analysis,
+    list_case_evidence_items,
     list_cases,
     mark_case_outdated,
 )
 from pages._layout import empty_state, render_page_header
+
+log = get_logger(__name__)
 
 
 def render() -> None:
@@ -47,13 +51,14 @@ def render() -> None:
         import json
         try:
             payload = json.loads(payload)
-        except Exception:
+        except (json.JSONDecodeError, ValueError, TypeError) as exc:
+            log.warning("Could not parse payload for case %s: %s", case_id, exc)
             payload = {}
 
     st.markdown("---")
 
     # Metrics Summary
-    m1, m2, m3, m4 = st.columns(4)
+    m1, m2, m3, m4, m5 = st.columns(5)
     with m1:
         st.metric("Source File", c_data["source_name"])
     with m2:
@@ -61,15 +66,55 @@ def render() -> None:
     with m3:
         st.metric("Verified Weapons", payload.get("verified_weapon_count", 0))
     with m4:
+        st.metric("Candidate Weapons", payload.get("candidate_weapon_count", 0), help="AI candidate suggestions")
+    with m5:
         st.metric("Severity Score", f"{analysis.get('severity_score', 0)}/100" if analysis else "N/A")
 
-    st.subheader("Evidence Items & Annotated Output")
+    if payload.get("verified_weapon_count", 0) == 0:
+        st.info("ℹ️ **Forensic Note:** No weapons detected in analyzed frames. This indicates non-detection under configured thresholds, not affirmative proof that an item or activity is absent.")
+
+    # Model and Evidence Traceability Expander
+    with st.expander("🔍 Model & Traceability Provenance", expanded=False):
+        p1, p2 = st.columns(2)
+        with p1:
+            st.markdown(f"**Case ID:** `#{case_id:03d}`")
+            st.markdown(f"**Evidence Version:** `v{c_data.get('evidence_version', 1)}`")
+            st.markdown(f"**Model Name:** `{payload.get('model_name', 'yolov8n')}`")
+            st.markdown(f"**Model Version:** `{payload.get('model_version', 'YOLOv8-audited')}`")
+        with p2:
+            st.markdown(f"**Model Weights / Hash:** `{payload.get('model_weights', 'MS COCO / Audited')}`")
+            st.markdown(f"**Raw Detections Count:** `{payload.get('raw_detections_count', payload.get('total_objects', 0))}`")
+            st.markdown(f"**Analysis Timestamp:** `{analysis.get('created_at', 'N/A') if analysis else 'N/A'}`")
+
+    # Case Evidence Items Gallery
+    evidence_items = list_case_evidence_items(DATABASE_PATH, case_id)
+    if evidence_items:
+        st.subheader("Case Evidence Inventory")
+        item_rows = []
+        for itm in evidence_items:
+            item_rows.append({
+                "Evidence ID": itm.get("evidence_id", ""),
+                "Filename": itm.get("filename", ""),
+                "Type": itm.get("file_type", "").upper(),
+                "Duration": f"{itm.get('duration', 0.0):.1f}s" if itm.get("duration") else "Image",
+                "Frames": itm.get("frame_count", 1),
+                "File Path": itm.get("file_path", ""),
+                "Annotated": "YES" if itm.get("annotated_path") else "NO",
+            })
+        st.dataframe(item_rows, use_container_width=True)
+
+        for itm in evidence_items:
+            ann_p = itm.get("annotated_path")
+            if ann_p and Path(ann_p).exists():
+                st.image(ann_p, caption=f"{itm.get('evidence_id')} - {itm.get('filename')}", use_container_width=True)
+
+    st.subheader("Primary Evidence Annotated Output")
 
     # Display annotated image if present
     annotated_path = payload.get("annotated_image_path")
     if annotated_path and Path(annotated_path).exists():
         st.image(annotated_path, caption=f"Annotated Evidence - Case #{case_id:03d}", use_container_width=True)
-    else:
+    elif not evidence_items:
         st.info("No annotated evidence image path stored for this case.")
 
     # Detections Breakdown Table
@@ -78,11 +123,14 @@ def render() -> None:
         st.subheader("Detections & Verification Breakdown")
         table_data = []
         for idx, d in enumerate(detections, start=1):
+            status = "VERIFIED WEAPON" if d.get("weapon_status") == "verified" or d.get("is_verified_weapon") else (
+                "CANDIDATE WEAPON" if d.get("weapon_status") == "candidate" or d.get("label") == "candidate_weapon" else "OBJECT"
+            )
             table_data.append({
                 "Item #": idx,
                 "Label": d.get("label", "Unknown").upper(),
                 "Confidence": f"{d.get('confidence', 0.0):.1%}",
-                "Verified Weapon": "YES" if d.get("is_verified_weapon") else "NO",
+                "Status": status,
                 "Bounding Box": str(d.get("box") or d.get("bbox") or "N/A"),
             })
         st.dataframe(table_data, use_container_width=True)

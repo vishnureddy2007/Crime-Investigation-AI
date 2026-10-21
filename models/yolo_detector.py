@@ -37,10 +37,12 @@ from config import (
     WEAPON_CONF_THRESHOLD,
     WEAPON_MODEL_NAME,
     WEAPON_SCAN_CONF_THRESHOLD,
+    WEAPON_VERIFY_THRESHOLD,
     YOLO_CLASS_MAPPING,
     YOLO_CONFIDENCE_THRESHOLD,
     YOLO_IOU_THRESHOLD,
     YOLO_MODEL_NAME,
+    get_weights_sha256,
 )
 from core.observability import RequestTimer
 from core.resilience import retry
@@ -111,55 +113,46 @@ def _cross_model_nms(
     iou_threshold: float = CROSS_MODEL_IOU_THRESHOLD,
 ) -> list[Detection]:
     """
-    Suppress overlapping detections across models with multi-stage weapon duplicate merging.
+    Confidence-aware, class-aware duplicate suppression across single- and multi-model detections.
 
-    Iterates by descending confidence, giving priority to dedicated
-    weapon-model detections over generic COCO object detections when
-    bounding boxes overlap.
+    Suppresses overlapping duplicate boxes referring to the same physical object while
+    strictly preserving distinct nearby weapons and objects of different classes.
+    Retains the strongest detection (highest confidence) for the same object.
     """
     if not detections:
         return []
 
-    def _sort_key(d: Detection) -> float:
-        boost = 0.30 if d.source in {"weapon", "threat-weapon"} else 0.0
-        return d.confidence + boost
+    def _sort_key(d: Detection) -> tuple[float, float]:
+        # Primary: confidence score (strongest detection wins)
+        # Secondary: tie-breaker preferring specialized models
+        source_prio = 1.0 if d.source in {"weapon", "threat-weapon"} else 0.5
+        return (d.confidence, source_prio)
 
     ordered = sorted(detections, key=_sort_key, reverse=True)
     kept: list[Detection] = []
     for det in ordered:
         duplicate = False
         det_is_weapon = (det.label in _WEAPON_LABEL_SYNONYMS or det.class_name in _WEAPON_LABEL_SYNONYMS)
-        
+
         for kept_det in kept:
             overlap_iou = _iou(det.bbox, kept_det.bbox)
             overlap_ios = _ios(det.bbox, kept_det.bbox)
             kept_is_weapon = (kept_det.label in _WEAPON_LABEL_SYNONYMS or kept_det.class_name in _WEAPON_LABEL_SYNONYMS)
 
-            # 1. Exact same label overlap check
-            if det.label == kept_det.label and overlap_iou > iou_threshold:
-                duplicate = True
-                break
-
-            # 2. Robust Duplicate Weapon Merging across models/synonyms (IoU > 0.35 or IoS > 0.60)
-            if det_is_weapon and kept_is_weapon:
-                if overlap_iou > 0.35 or overlap_ios > 0.60:
+            # 1. Exact same class / label duplicate overlap check
+            if det.label == kept_det.label:
+                if overlap_iou > iou_threshold or (overlap_ios > 0.70 and overlap_iou > 0.20):
                     duplicate = True
                     break
 
-            # 3. Dedicated weapon model vs COCO non-person/non-vehicle overlap
-            if overlap_iou > iou_threshold:
-                if (
-                    kept_det.source in {"weapon", "threat-weapon"}
-                    and det.label not in {"person", "vehicle"}
-                ):
+            # 2. Cross-model duplicate detections of the same physical weapon
+            elif det_is_weapon and kept_is_weapon:
+                if overlap_iou > iou_threshold or (overlap_ios > 0.70 and overlap_iou > 0.20) or overlap_ios > 0.85:
                     duplicate = True
                     break
-                if (
-                    det.source in {"weapon", "threat-weapon"}
-                    and kept_det.label not in {"person", "vehicle"}
-                ):
-                    duplicate = True
-                    break
+
+            # 3. Distinct nearby weapons (low overlap) and different classes (e.g. person holding weapon)
+            # are NOT duplicates and remain separate.
 
         if not duplicate:
             kept.append(det)
@@ -389,6 +382,11 @@ class YOLODetector:
     ) -> DetectionResult:
         if annotated is None:
             annotated = draw_detections(image, detections)
+        weights_map = {self.model_name: get_weights_sha256(self.model_name)}
+        cfg = {"confidence": self.confidence, "iou": self.iou}
+        verified_w = [d for d in detections if getattr(d, "weapon_status", "") == "verified"]
+        candidates_w = [d for d in detections if getattr(d, "weapon_status", "") == "candidate"]
+        rejected_w = [d for d in detections if getattr(d, "weapon_status", "") == "rejected"]
         return DetectionResult(
             source_name=source_name,
             timestamp=datetime.now(),
@@ -397,6 +395,15 @@ class YOLODetector:
             annotated_image=annotated,
             model_name=self.model_name,
             source_tag=source_tag,
+            models_used=[source_tag],
+            raw_detections=list(detections),
+            weapon_candidates=candidates_w,
+            verified_weapons=verified_w,
+            rejected_detections=rejected_w,
+            uncertain_detections=candidates_w,
+            model_version="yolov8n",
+            model_weights=weights_map,
+            config_metadata=cfg,
         )
 
 
@@ -626,8 +633,9 @@ class MultiSourceDetector:
                     if bw * bh < 0.50 * W * H:
                         threat_extra.append(d)
 
+        raw_all = general_raw + weapon_scan_raw + weapon_extra + threat_extra
         merged = _cross_model_nms(
-            general_raw + weapon_scan_raw + weapon_extra + threat_extra,
+            raw_all,
             iou_threshold=self.iou_threshold,
         )
 
@@ -642,20 +650,67 @@ class MultiSourceDetector:
         elif any(d.source == "weapon-scan" for d in merged):
             model_name = "general (weapon-scan)"
 
-        annotated = draw_detections(image, merged)
         # Phase 46 — apply the two-stage weapon verification so each
         # detection knows whether it is verified, candidate, or
         # non-weapon.
-        verified = _verify_detections(merged)
+        verified = _verify_detections(merged, image=image)
+        annotated = draw_detections(image, verified)
+
+        weights_map: dict[str, str] = {}
+        gen_name = getattr(self.general, "model_name", None)
+        if gen_name:
+            weights_map[gen_name] = get_weights_sha256(gen_name)
+        else:
+            weights_map["detector"] = "audited"
+
+        if self._weapon is not None:
+            w_name = getattr(self._weapon, "model_name", None)
+            if w_name:
+                weights_map[w_name] = get_weights_sha256(w_name)
+
+        if self._threat_weapon is not None:
+            tw_name = getattr(self._threat_weapon, "model_name", None)
+            if tw_name:
+                weights_map[tw_name] = get_weights_sha256(tw_name)
+
+        config_meta = {
+            "confidence": conf,
+            "iou": iou_thr,
+            "weapon_scan_confidence": WEAPON_SCAN_CONF_THRESHOLD,
+            "weapon_confidence": WEAPON_CONF_THRESHOLD,
+            "weapon_verify_threshold": WEAPON_VERIFY_THRESHOLD,
+        }
+
+        verified_w = [d for d in verified if getattr(d, "weapon_status", "") == "verified"]
+        candidates_w = [d for d in verified if getattr(d, "weapon_status", "") == "candidate"]
+        rejected_w = [d for d in verified if getattr(d, "weapon_status", "") == "rejected"]
+
+        # Track NMS-suppressed duplicates in rejected_detections
+        suppressed_nms = [d for d in raw_all if d not in merged]
+        for s_det in suppressed_nms:
+            s_det.weapon_status = "rejected"
+            if not getattr(s_det, "verification_reason", ""):
+                s_det.verification_reason = "DUPLICATE_DETECTION"
+            if s_det not in rejected_w:
+                rejected_w.append(s_det)
+
         return DetectionResult(
             source_name=source_name,
             timestamp=datetime.now(),
             detections=verified,
-            raw_count=len(general_raw) + len(weapon_scan_raw) + len(weapon_extra) + len(threat_extra),
-            annotated_image=draw_detections(image, verified),
+            raw_count=len(raw_all),
+            annotated_image=annotated,
             model_name=model_name,
             source_tag="multi",
             models_used=models_used,
+            raw_detections=raw_all,
+            weapon_candidates=candidates_w,
+            verified_weapons=verified_w,
+            rejected_detections=rejected_w,
+            uncertain_detections=candidates_w,
+            model_version="yolov8n-multisource",
+            model_weights=weights_map,
+            config_metadata=config_meta,
         )
 
 

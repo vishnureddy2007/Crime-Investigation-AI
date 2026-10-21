@@ -8,6 +8,7 @@ Zero development milestones or software progress tables.
 
 from __future__ import annotations
 
+import sqlite3
 import streamlit as st
 
 from config import APP_NAME, APP_VERSION, DATABASE_PATH
@@ -17,8 +18,11 @@ from core.icons import (
     ACTION_VIEW_RECONSTRUCTION,
     ICON_DASHBOARD,
 )
+from core.logging import get_logger
 from pages._layout import render_page_header
 from database.repository import list_cases
+
+log = get_logger(__name__)
 
 
 def _render_hero() -> None:
@@ -70,8 +74,8 @@ def _render_db_kpis() -> None:
             row_r = conn.execute("SELECT COUNT(*) FROM reports").fetchone()
             if row_r:
                 total_reports = row_r[0]
-    except Exception:
-        pass
+    except (sqlite3.Error, OSError, ValueError) as exc:
+        log.warning("Could not query forensic counts from database: %s", exc)
 
     c1, c2, c3, c4, c5 = st.columns(5)
     with c1:

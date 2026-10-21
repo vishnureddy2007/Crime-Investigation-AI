@@ -7,9 +7,11 @@ modules can read consistent values without hardcoding them.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from pathlib import Path
+from typing import Any
 
 # ------------------------------------------------------------------
 # Deployment-time overrides (Milestone 12+)
@@ -99,6 +101,109 @@ WEAPON_VERIFICATION_CONFIG: dict[str, Any] = {
     "multi_scale_enabled": True,
     "crop_padding_fraction": 0.15,
 }
+
+
+def validate_detection_thresholds(
+    confidence: float,
+    iou: float,
+    scan_confidence: float | None = None,
+    verify_threshold: float | None = None,
+) -> dict[str, float]:
+    """
+    Validate configurable detection and verification thresholds with bounded ranges.
+
+    Operational Trade-Off Documentation:
+    - Raising detection/verification thresholds reduces false positives (fewer false alarms)
+      while increasing missed detections (risk of false negatives / undetected weapons).
+    - Lowering thresholds increases sensitivity (detecting partially obscured, distant, or weak signals)
+      at the cost of generating more candidate false positives that require investigator review.
+    - All threshold values must be strictly bounded in [0.01, 0.99].
+    - Where supplied, scan_confidence must not exceed confidence, and confidence must not exceed verify_threshold.
+    """
+    try:
+        conf_f = float(confidence)
+        iou_f = float(iou)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Detection thresholds must be numeric values: {exc}") from exc
+
+    if not (0.01 <= conf_f <= 0.99):
+        raise ValueError(f"Confidence threshold {conf_f} must be within [0.01, 0.99]")
+    if not (0.01 <= iou_f <= 0.99):
+        raise ValueError(f"IoU threshold {iou_f} must be within [0.01, 0.99]")
+
+    result: dict[str, float] = {"confidence": conf_f, "iou": iou_f}
+
+    if scan_confidence is not None:
+        try:
+            scan_f = float(scan_confidence)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Scan confidence threshold must be numeric: {exc}") from exc
+        if not (0.01 <= scan_f <= 0.99):
+            raise ValueError(f"Scan confidence {scan_f} must be within [0.01, 0.99]")
+        if scan_f > conf_f:
+            raise ValueError(
+                f"Scan confidence ({scan_f}) cannot exceed primary confidence ({conf_f})"
+            )
+        result["scan_confidence"] = scan_f
+
+    if verify_threshold is not None:
+        try:
+            verify_f = float(verify_threshold)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Verification threshold must be numeric: {exc}") from exc
+        if not (0.01 <= verify_f <= 0.99):
+            raise ValueError(f"Verification threshold {verify_f} must be within [0.01, 0.99]")
+        if conf_f > verify_f:
+            raise ValueError(
+                f"Primary confidence ({conf_f}) cannot exceed verification threshold ({verify_f})"
+            )
+        result["verify_threshold"] = verify_f
+
+    return result
+
+# Audited model specifications and provenance registry (Requirement 1 & 10)
+AUDITED_MODEL_REGISTRY: dict[str, dict[str, Any]] = {
+    "yolov8n.pt": {
+        "description": "General object detector (YOLOv8 Nano)",
+        "source": "Ultralytics MS COCO pre-trained weights",
+        "license": "AGPL-3.0",
+        "sha256": "f59b3d833e2ff32e194b5bb8e08d211dc7c5bdf144b90d2c8412c47ccfc83b36",
+        "class_count": 80,
+        "weapon_classes": ["knife"],
+        "non_weapon_relevant_classes": ["person", "car", "motorcycle", "bus", "truck", "backpack", "handbag", "suitcase"],
+    },
+    "models/weapon.pt": {
+        "description": "Dedicated firearm detector (YOLOv8)",
+        "source": "Fine-tuned forensic firearm detection weights",
+        "license": "Proprietary / Internal Research",
+        "sha256": "3ff881c42deb41a1d7d9f1a98ad884c378b06839d56e2757e523f089aa521e12",
+        "class_count": 1,
+        "weapon_classes": ["Gun"],
+    },
+    "models/threat_weapon.pt": {
+        "description": "Dedicated threat objects detector (YOLOv8)",
+        "source": "Fine-tuned forensic threat objects weights",
+        "license": "Proprietary / Internal Research",
+        "sha256": "86c43444ae8319d2276dd300edc3e7f7a1137fe7566737f994ca579ad770f6ce",
+        "class_count": 4,
+        "weapon_classes": ["Gun", "knife", "grenade", "explosion"],
+    },
+}
+
+_WEIGHTS_HASH_CACHE: dict[str, str] = {}
+
+
+def get_weights_sha256(weights_path: str | Path) -> str:
+    """Compute and cache SHA-256 hash for forensic model verification."""
+    p = Path(weights_path)
+    key = str(p.resolve()) if p.exists() else str(weights_path)
+    if key in _WEIGHTS_HASH_CACHE:
+        return _WEIGHTS_HASH_CACHE[key]
+    if p.exists() and p.is_file():
+        h = hashlib.sha256(p.read_bytes()).hexdigest()
+        _WEIGHTS_HASH_CACHE[key] = h
+        return h
+    return "weights_file_not_found"
 
 # IoU threshold for cross-model NMS dedup. If two detections from
 # different models overlap by more than this fraction, the

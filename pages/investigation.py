@@ -20,7 +20,10 @@ from core.icons import (
     SECTION_COMBINED,
     SECTION_PER_FILE,
 )
+from core.logging import get_logger
 from models.batch_processor import BatchEvidenceProcessor, FileEvidence
+
+log = get_logger(__name__)
 from models.evidence_analyzer import analyze
 from models.schemas import AnalysisInput, EvidenceAnalysis
 from models.yolo_detector import get_multi_source_detector
@@ -65,21 +68,43 @@ def _render_file_evidence_card(file_evidence: FileEvidence) -> None:
                 use_container_width=True,
             )
 
-        # Count metrics (Section 7: Separate raw, candidate, verified)
+        # Count metrics (4-way separation: persons, verified weapons, candidates, rejected)
         v_count = sum(1 for det in d.detections if det.weapon_status == "verified" and human_decisions.get(f"{det.label}@{det.confidence:.2f}") != "REJECT")
         c_count = sum(1 for det in d.detections if det.weapon_status == "candidate" and human_decisions.get(f"{det.label}@{det.confidence:.2f}") != "REJECT")
+        rej_count = getattr(d, "rejected_count", 0)
 
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Persons", file_evidence.person_count)
         c2.metric("Verified Weapons", v_count)
-        c3.metric("Vehicles", file_evidence.vehicle_count)
-        c4.metric("Bags", file_evidence.bag_count)
+        c3.metric("Candidate Weapons", c_count, help="AI suggestions pending investigator review")
+        c4.metric("Suppressed / Rejected", rej_count, help="Duplicate or low-confidence false alarms filtered by NMS")
+
+        if v_count == 0 and c_count == 0:
+            st.info("ℹ️ **Forensic Note:** No verified weapon detected in this image. This indicates non-detection under configured thresholds, not proof of absence.")
+        elif c_count > 0:
+            st.warning(f"⚠️ {c_count} potential weapon candidate(s) require investigator confirmation; they are not counted as verified weapons.")
+
+        # Provenance Traceability Expander
+        with st.expander("🔍 Model & Traceability Metadata", expanded=False):
+            meta_col1, meta_col2 = st.columns(2)
+            with meta_col1:
+                st.markdown(f"**Model Name:** `{d.model_name}`")
+                st.markdown(f"**Model Version:** `{getattr(d, 'model_version', 'YOLOv8-audited')}`")
+                st.markdown(f"**Raw Detections:** `{getattr(d, 'raw_detections_count', d.count)}`")
+            with meta_col2:
+                weights = getattr(d, "model_weights", {})
+                if isinstance(weights, dict):
+                    weights_summary = ", ".join(f"`{k}`: {v[:8]}..." for k, v in weights.items())
+                else:
+                    weights_summary = str(weights)
+                st.markdown(f"**Weights SHA-256:** {weights_summary or 'MS COCO / Audited'}")
+                st.markdown(f"**Analyzed Timestamp:** `{getattr(d, 'timestamp', file_evidence.timestamp)}`")
 
         # Optional Investigator Audit & Override Section (Section 15)
         weapon_dets = [det for det in d.detections if det.label in {"weapon", "knife", "candidate_weapon"} or "weapon" in det.class_name.lower()]
         if weapon_dets:
-            with st.expander("🛡️ Investigator Audit & Manual Override (Optional)", expanded=False):
-                st.caption("Weapon verification runs automatically. You may optionally audit or override individual detections below.")
+            with st.expander("🛡️ Investigator Audit & Manual Override", expanded=True):
+                st.caption("AI-generated weapon labels are suggestions for human review. Confirm or reject each candidate below:")
 
             for idx, w_det in enumerate(weapon_dets, start=1):
                 key = f"{w_det.label}@{w_det.confidence:.2f}"
@@ -89,20 +114,25 @@ def _render_file_evidence_card(file_evidence: FileEvidence) -> None:
                     w_col1, w_col2, w_col3 = st.columns([3, 2, 3])
 
                     with w_col1:
-                        st.markdown(f"**Weapon Detection #{idx}**")
-                        st.markdown(f"Type: `{w_det.class_name.title()}` | Conf: `{w_det.confidence * 100:.1f}%`")
-                        st.markdown(f"Source Model: `{w_det.source}`")
+                        st.markdown(f"**Detection #{idx}: {w_det.class_name.title()}**")
+                        st.markdown(f"Confidence: `{w_det.confidence * 100:.1f}%` | Source: `{w_det.source}`")
+                        st.caption(f"Bounding Box: `[{w_det.x1:.1f}, {w_det.y1:.1f}, {w_det.x2:.1f}, {w_det.y2:.1f}]`")
 
                     with w_col2:
                         if decision == "CONFIRM":
-                            st.markdown("🟢 **Status: VERIFIED WEAPON**")
+                            st.markdown("🟢 **Status: VERIFIED WEAPON (HUMAN CONFIRMED)**")
+                            st.caption("Included in verified counts and severity scoring")
                         elif decision == "REJECT":
-                            st.markdown("🔴 **Status: REJECTED**")
-                            st.caption("Excluded from final report & 3D scene")
+                            st.markdown("🔴 **Status: REJECTED (FALSE POSITIVE)**")
+                            st.caption("Excluded from verified counts, severity scoring, summaries, and reports")
                         elif w_det.weapon_status == "verified":
-                            st.markdown("🟢 **Status: VERIFIED WEAPON**")
+                            st.markdown("🟢 **Status: VERIFIED WEAPON (AI VERIFIED)**")
+                            if getattr(w_det, "verification_reason", ""):
+                                st.caption(f"Reason: `{w_det.verification_reason}`")
                         else:
-                            st.markdown("🟡 **Status: PENDING VERIFICATION**")
+                            st.markdown("🟡 **Status: Possible weapon — review needed.**")
+                            reason_txt = getattr(w_det, "verification_reason", "INSUFFICIENT_VISUAL_EVIDENCE")
+                            st.caption(f"Reason: `{reason_txt}`")
 
                     with w_col3:
                         b_col1, b_col2 = st.columns(2)
@@ -128,7 +158,38 @@ def _render_file_evidence_card(file_evidence: FileEvidence) -> None:
 
     elif file_evidence.video is not None:
         v = file_evidence.video
-        st.info(f"Video duration: {v.duration_sec:.1f}s | Keyframes extracted: {len(v.keyframes)}")
+        from models.video_processor import consolidate_video_events
+
+        events = consolidate_video_events(v.frame_results)
+        verified_events = [event for event in events if event.status == "verified" and event.label.lower() in {"weapon", "knife", "gun", "pistol", "handgun", "rifle", "revolver", "shotgun", "firearm", "grenade"}]
+        candidate_events = [event for event in events if event.status == "candidate" and event.label.lower() in {"weapon", "knife", "gun", "pistol", "handgun", "rifle", "revolver", "shotgun", "firearm", "grenade"}]
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Video duration", f"{v.duration_sec:.1f}s")
+        m2.metric("Sampled frames", v.frame_count)
+        m3.metric("Verified weapon tracks", len(verified_events))
+        m4.metric("Candidate tracks", len(candidate_events), help="Requires investigator review")
+
+        if not verified_events and not candidate_events:
+            st.info("ℹ️ **Forensic Note:** No weapons detected in analyzed video frames. This indicates non-detection under configured thresholds, not proof of absence.")
+        elif candidate_events:
+            st.warning(f"⚠️ {len(candidate_events)} candidate weapon track(s) require investigator review; persistence alone does not verify a weapon.")
+
+        # Provenance Traceability Expander for Video
+        with st.expander("🔍 Model & Video Traceability Metadata", expanded=False):
+            st.markdown(f"**Model Name:** `{v.model_name}` | **Version:** `{getattr(v, 'model_version', 'YOLOv8-audited')}`")
+            v_weights = getattr(v, "model_weights", {})
+            if isinstance(v_weights, dict):
+                v_weights_summary = ", ".join(f"`{k}`: {val[:8]}..." for k, val in v_weights.items())
+            else:
+                v_weights_summary = str(v_weights)
+            st.markdown(f"**Weights SHA-256:** {v_weights_summary or 'MS COCO / Audited'}")
+            st.markdown(f"**Frame Rate:** `{v.fps:.1f} fps` | **Total Detections Across Frames:** `{v.total_detections()}`")
+
+        if verified_events or candidate_events:
+            with st.expander("Weapon Event & Track Review", expanded=bool(candidate_events)):
+                for event in verified_events + candidate_events:
+                    state = "Verified" if event.status == "verified" else "Needs Review (Candidate)"
+                    st.write(f"**{state} · {event.label}** — {event.start_sec:.1f}–{event.end_sec:.1f}s · seen in {event.frame_count} sampled frames · mean confidence {event.avg_confidence:.0%}")
         if v.keyframes:
             st.markdown("**Extracted Keyframes:**")
             cols = st.columns(min(len(v.keyframes), 4))
@@ -148,6 +209,18 @@ def _render_upload_and_detect_tab() -> None:
     st.markdown("### Upload & Detect Evidence")
     st.caption("Upload single or multiple crime-scene images and/or CCTV video files for automated detection.")
 
+    with st.expander("⚙️ Audited Model Weights & Detection Thresholds", expanded=False):
+        st.markdown(
+            """
+            - **General Detector:** `yolov8n.pt` (MS COCO 80 classes; SHA-256: `f59b3d833e2f...`)
+            - **Firearm Specialist:** `models/weapon.pt` (Handgun/rifle; SHA-256: `3ff881c42deb...`)
+            - **Threat Verifier:** `models/threat_weapon.pt` (Secondary verifier; SHA-256: `86c43444ae83...`)
+            - **Classification Rule:** Unsupported classes (e.g., bottles, cellphones, scissors, bats, shadows) are strictly excluded from weapon labels.
+            - **Verification Policy:** AI weapon detections remain **unverified candidates** until visual verification confirms edge/aspect structure. Candidates are presented as "Possible weapon — review needed."
+            - **Operational Trade-Off Documentation:** Raising confidence/verification thresholds reduces false positives but increases missed detections (false negatives / missed real weapons). Lowering thresholds increases sensitivity (detecting partially obscured, distant, or weak signals) at the cost of generating more candidate false positives that require investigator review.
+            """
+        )
+
     col1, col2 = st.columns(2)
     with col1:
         conf = st.slider(
@@ -155,6 +228,7 @@ def _render_upload_and_detect_tab() -> None:
             min_value=0.10, max_value=0.90,
             value=YOLO_CONFIDENCE_THRESHOLD, step=0.05,
             key="inv_conf_slider",
+            help="Raising thresholds reduces false alarms but increases missed detections; lowering thresholds increases recall.",
         )
     with col2:
         iou = st.slider(
@@ -162,7 +236,14 @@ def _render_upload_and_detect_tab() -> None:
             min_value=0.10, max_value=0.90,
             value=YOLO_IOU_THRESHOLD, step=0.05,
             key="inv_iou_slider",
+            help="Threshold for deduplicating overlapping duplicate detections referring to the same physical object.",
         )
+
+    from config.settings import validate_detection_thresholds
+    try:
+        validate_detection_thresholds(conf, iou)
+    except ValueError as exc:
+        st.error(f"Invalid threshold configuration: {exc}")
 
     images = st.file_uploader(
         "Upload Images",
@@ -227,8 +308,8 @@ def _render_upload_and_detect_tab() -> None:
                                 ann_file = ann_dir / f"annotated_{saved_path.name}"
                                 f_ev.detection.annotated_image.save(ann_file, format="JPEG", quality=90)
                                 annotated_path = str(ann_file)
-                            except Exception:
-                                pass
+                            except (OSError, ValueError, RuntimeError) as exc:
+                                log.warning("Could not save annotated image %s: %s", ann_file, exc)
 
                         # Build per-file payload
                         dets_payload = []
@@ -285,37 +366,42 @@ def _render_evidence_analysis_tab() -> None:
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Severity Score", f"{analysis.severity_score}/100")
     c2.metric("Severity Level", analysis.severity_level.upper())
-    c3.metric("Category", analysis.suggested_category.replace("_", " ").title())
-    c4.metric("Total Objects", sum(analysis.counts_by_label.values()))
+    c3.metric("Verified Weapons", analysis.verified_weapon_count)
+    c4.metric("Candidate Weapons", analysis.candidate_weapon_count, help="Pending investigator verification")
 
     if analysis.has_threat:
-        st.error("⚠️ THREAT DETECTED: Weapon or high-threat item detected in active evidence.")
+        st.error("⚠️ THREAT DETECTED: Verified weapon or high-threat item detected in active evidence.")
     else:
-        st.success("✅ No high-threat weapon detected in active evidence.")
+        if getattr(analysis, "source_type", "") == "image":
+            st.info("ℹ️ **Forensic Note:** No verified weapon detected in this image. This indicates non-detection under configured thresholds, not proof of absence.")
+        else:
+            st.info("ℹ️ **Forensic Note:** No verified weapons detected in analyzed video frames. This indicates non-detection under configured thresholds, not proof of absence.")
+
+    with st.expander("🔍 Analysis Provenance & Traceability Metadata", expanded=False):
+        p_col1, p_col2 = st.columns(2)
+        with p_col1:
+            st.markdown(f"**Source:** `{analysis.source_name}` ({analysis.source_type})")
+            st.markdown(f"**Model Version:** `{getattr(analysis, 'model_version', 'YOLOv8-audited')}`")
+            st.markdown(f"**Raw Detections Count:** `{getattr(analysis, 'raw_detections_count', analysis.total_objects)}`")
+        with p_col2:
+            st.markdown(f"**Model Weights:** `{getattr(analysis, 'model_weights', 'MS COCO / Audited')}`")
+            st.markdown(f"**Rejected Detections:** `{getattr(analysis, 'rejected_count', 0)}`")
+            st.markdown(f"**Analyzed Timestamp:** `{analysis.timestamp}`")
 
     st.markdown("---")
     col1, col2 = col2_cols = st.columns(2)
     with col1:
         st.markdown("#### Detected Objects Breakdown")
-        # Separate verified weapons from other detections for clarity
-        verified_weapons = 0
-        others = {}
-
-        for lbl, count in analysis.counts_by_label.items():
-            # If the label is actually a weapon, we can highlight it
-            if "weapon" in lbl.lower():
-                verified_weapons += count
+        for lbl, count in sorted(analysis.counts_by_label.items()):
+            if lbl in ("weapon", "knife", "gun", "pistol", "rifle", "firearm"):
+                st.markdown(f"- 🚨 **{lbl.replace('_', ' ').title()} (Verified)**: {count}")
+            elif lbl == "candidate_weapon":
+                st.markdown(f"- 🟡 **Candidate Weapon (Unverified)**: {count}")
             else:
-                others[lbl] = count
-
-        if verified_weapons > 0:
-            st.markdown(f"- 🚨 **Verified Weapons**: {verified_weapons}")
-
-        for lbl, count in others.items():
-            st.markdown(f"- **{lbl.replace('_', ' ').title()}**: {count}")
+                st.markdown(f"- **{lbl.replace('_', ' ').title()}**: {count}")
 
     with col2:
-        st.markdown("#### Key Observations")
+        st.markdown("#### Key Observations & Forensic Interpretations")
         for obs in analysis.key_observations:
             st.markdown(f"- {obs}")
 

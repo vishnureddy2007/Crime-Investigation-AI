@@ -34,10 +34,11 @@ from config import (
 class WeaponVerification:
     """The verified/candidate outcome for one weapon-class detection."""
 
-    status: str            # "verified" | "candidate" | "non_weapon"
+    status: str            # "verified" | "candidate" | "non_weapon" | "rejected"
     label: str             # "weapon" | "knife" | "candidate_weapon" | original label
     confidence: float
     source: str            # "general" | "weapon-scan" | "weapon" | "threat-weapon" | "temporal"
+    verification_reason: str = ""
 
     @property
     def is_verified(self) -> bool:
@@ -50,6 +51,12 @@ WEAPON_LABELS: frozenset[str] = frozenset({
     "shotgun", "Shotgun", "gun", "Gun", "pistol", "Pistol",
     "rifle", "Rifle", "handgun", "Handgun", "firearm", "Firearm",
     "grenade", "Grenade", "candidate_weapon"
+})
+
+LOOKALIKE_NON_WEAPON_CLASSES: frozenset[str] = frozenset({
+    "bottle", "bottles", "scissors", "baseball bat", "baseball_bat",
+    "toy", "toys", "shadow", "shadows", "cell phone", "phone",
+    "remote", "cup", "book", "umbrella", "chair", "bench"
 })
 
 CANONICAL_WEAPON_SUBTYPES: dict[str, str] = {
@@ -195,7 +202,7 @@ def verify_weapon_crop_visual(
             import cv2
             edges = cv2.Canny(gray, 50, 150)
             edge_ratio = float(np.count_nonzero(edges)) / float(edges.size)
-        except Exception:
+        except (ImportError, RuntimeError, OSError, ValueError, TypeError, AttributeError):
             gx, gy = np.gradient(gray.astype(float))
             grad = np.sqrt(gx**2 + gy**2)
             edge_ratio = float(np.count_nonzero(grad > 25.0)) / float(grad.size)
@@ -212,7 +219,7 @@ def verify_weapon_crop_visual(
             return -0.15, "EXTREME_ASPECT_RATIO"
         else:
             return 0.02, "NEUTRAL_CROP_VISUAL"
-    except Exception as exc:
+    except (RuntimeError, OSError, ValueError, TypeError, AttributeError) as exc:
         return 0.0, f"CROP_VERIFICATION_ERROR: {exc}"
 
 
@@ -225,17 +232,29 @@ def classify_weapon_detection(
     img_height: float | None = None,
     class_name: str | None = None,
     image: Any | None = None,
-) -> tuple[str, str]:
+    return_reason: bool = False,
+) -> tuple[str, str] | tuple[str, str, str]:
     """
-    Multi-stage weapon verification logic.
-    Returns tuple of (final_state, post_mapping_label).
+    Multi-stage weapon verification logic (Requirement 1, 2, 3).
+    Ensures model outputs are treated as candidates and never verified
+    based solely on high confidence or image-shape shortcuts.
+    Returns (state, target_label) or (state, target_label, reason).
     final_state: 'WEAPON' | 'NOT_WEAPON' | 'UNCERTAIN'
     """
     raw_label = (class_name or label or "").strip()
     lbl_lower = raw_label.lower()
 
+    # Rule 0: Reject lookalikes and unrelated classes immediately
+    if (
+        lbl_lower in LOOKALIKE_NON_WEAPON_CLASSES
+        or (class_name and class_name.lower() in LOOKALIKE_NON_WEAPON_CLASSES)
+    ):
+        reason = "LOOKALIKE_OBJECT_REJECTED"
+        return ("NOT_WEAPON", label, reason) if return_reason else ("NOT_WEAPON", label)
+
     if label not in WEAPON_LABELS and lbl_lower not in WEAPON_LABELS:
-        return "NOT_WEAPON", label
+        reason = "UNSUPPORTED_CLASS"
+        return ("NOT_WEAPON", label, reason) if return_reason else ("NOT_WEAPON", label)
 
     # Preserve canonical weapon subtype (e.g. revolver, pistol, rifle, knife)
     subtype = CANONICAL_WEAPON_SUBTYPES.get(raw_label, CANONICAL_WEAPON_SUBTYPES.get(lbl_lower, "weapon"))
@@ -251,35 +270,41 @@ def classify_weapon_detection(
         if img_width is not None and img_height is not None and img_width > 0 and img_height > 0:
             rel_area = area / max(1.0, float(img_width * img_height))
 
-        # Rejection Rule 1A: Tiny artifact box (< 6px or area < 25px) with sub-0.78 confidence
-        if (bw < 6 or bh < 6 or area < 25.0) and confidence < WEAPON_HIGH_CONF_THRESHOLD:
-            return "NOT_WEAPON", target_label
+        # Rejection Rule 1A: Tiny artifact box (< 6px or area < 25px)
+        if bw < 6 or bh < 6 or area < 25.0:
+            reason = "TINY_CROP"
+            return ("NOT_WEAPON", target_label, reason) if return_reason else ("NOT_WEAPON", target_label)
 
-        # Rejection Rule 1B: Extreme aspect ratio (> 8.0) with sub-0.78 confidence
-        if aspect_ratio > 8.0 and confidence < WEAPON_HIGH_CONF_THRESHOLD:
-            return "NOT_WEAPON", target_label
+        # Rejection Rule 1B: Extreme aspect ratio (> 8.0)
+        if aspect_ratio > 8.0:
+            reason = "EXTREME_ASPECT_RATIO"
+            return ("NOT_WEAPON", target_label, reason) if return_reason else ("NOT_WEAPON", target_label)
 
-        # Rejection Rule 1C: Excessive screen area (> 50% screen) with sub-0.78 confidence
-        if rel_area is not None and rel_area > 0.50 and confidence < WEAPON_HIGH_CONF_THRESHOLD:
-            return "NOT_WEAPON", target_label
+        # Rejection Rule 1C: Excessive screen area (> 50% screen)
+        if rel_area is not None and rel_area > 0.50:
+            reason = "EXCESSIVE_SCREEN_AREA"
+            return ("NOT_WEAPON", target_label, reason) if return_reason else ("NOT_WEAPON", target_label)
 
-    # Stage 2: High Confidence Shortcut
-    if confidence >= WEAPON_HIGH_CONF_THRESHOLD:
-        return "WEAPON", target_label
-
-    # Stage 3: Crop Visual Feature Analysis
+    # Stage 2: Crop Visual Feature Analysis (Runs for ALL candidates with crops)
     visual_boost, visual_diag = verify_weapon_crop_visual(image, bbox, class_name=subtype, confidence=confidence)
-    if visual_diag == "FLAT_GRADIENT_NOISE" and confidence < 0.65:
-        return "NOT_WEAPON", target_label
+    if visual_diag == "FLAT_GRADIENT_NOISE":
+        reason = "FLAT_GRADIENT_NOISE"
+        return ("NOT_WEAPON", target_label, reason) if return_reason else ("NOT_WEAPON", target_label)
+    if visual_diag == "EXTREME_ASPECT_RATIO":
+        reason = "EXTREME_ASPECT_RATIO"
+        return ("NOT_WEAPON", target_label, reason) if return_reason else ("NOT_WEAPON", target_label)
+    if visual_diag == "TINY_CROP":
+        reason = "TINY_CROP"
+        return ("NOT_WEAPON", target_label, reason) if return_reason else ("NOT_WEAPON", target_label)
 
-    # Stage 4: Multi-Signal Verification Score Computation
+    # Stage 3: Multi-Signal Verification Score Computation
     score = confidence + visual_boost
 
-    # Source credibility boost (only for dedicated weapon models with conf >= 0.32)
+    # Source credibility boost (specialized forensic models)
     if source in {"weapon", "threat-weapon", "temporal"} and confidence >= 0.32:
         score += 0.08
 
-    # Specific subclass boost (specific firearm classes like revolver/pistol have lower false positive priors)
+    # Specific subclass boost (specific firearm classes have lower false positive priors)
     if subtype in {"revolver", "pistol", "handgun", "rifle", "shotgun"}:
         score += 0.07
 
@@ -287,13 +312,16 @@ def classify_weapon_detection(
     if 1.1 <= aspect_ratio <= 5.5 and (rel_area is None or 0.0005 <= rel_area <= 0.25):
         score += 0.05
 
-    # Stage 5: Threshold Evaluation
+    # Stage 4: Threshold Evaluation
     if score >= WEAPON_VERIFY_THRESHOLD and confidence >= 0.32:
-        return "WEAPON", target_label
+        reason = visual_diag if visual_diag in {"FIREARM_STRUCTURE_VALIDATED"} else "MULTI_SIGNAL_STRUCTURE_VERIFIED"
+        return ("WEAPON", target_label, reason) if return_reason else ("WEAPON", target_label)
     elif confidence >= WEAPON_CONF_THRESHOLD:
-        return "UNCERTAIN", target_label
+        reason = "INSUFFICIENT_VISUAL_EVIDENCE"
+        return ("UNCERTAIN", target_label, reason) if return_reason else ("UNCERTAIN", target_label)
     else:
-        return "NOT_WEAPON", target_label
+        reason = "LOW_CONFIDENCE_OR_INVALID_SHAPE"
+        return ("NOT_WEAPON", target_label, reason) if return_reason else ("NOT_WEAPON", target_label)
 
 
 def separate_detection_states(detections: list, image: Any | None = None) -> dict[str, Any]:
@@ -323,7 +351,7 @@ def separate_detection_states(detections: list, image: Any | None = None) -> dic
         if lbl in WEAPON_LABELS or cls_name in WEAPON_LABELS or cls_name.lower() in WEAPON_LABELS:
             raw_candidates.append(d)
 
-    # 2. Class-aware candidate deduplication (IoU > 0.35 / IoS > 0.60)
+    # 2. Class-aware candidate deduplication (IoU > 0.35 or (IoS > 0.70 and IoU > 0.20))
     sorted_candidates = sorted(raw_candidates, key=lambda c: getattr(c, "confidence", 0.0), reverse=True)
     kept_candidates = []
 
@@ -336,10 +364,12 @@ def separate_detection_states(detections: list, image: Any | None = None) -> dic
                 if b2 is not None:
                     iou_val = _compute_bbox_iou(b1, b2)
                     ios_val = _compute_bbox_ios(b1, b2)
-                    if iou_val > 0.35 or ios_val > 0.60:
+                    if iou_val > 0.35 or (ios_val > 0.70 and iou_val > 0.20):
                         is_dup = True
                         if hasattr(cand, "weapon_status"):
                             cand.weapon_status = "rejected"
+                        if hasattr(cand, "verification_reason"):
+                            cand.verification_reason = "DUPLICATE_DETECTION"
                         rejected.append(cand)
                         lbl_key = getattr(cand, "label", getattr(cand, "class_name", "weapon"))
                         conf_val = getattr(cand, "confidence", 0.0)
@@ -358,33 +388,37 @@ def separate_detection_states(detections: list, image: Any | None = None) -> dic
         source = getattr(d, "source", "general")
         bbox = getattr(d, "bbox", None)
 
-        state, target_label = classify_weapon_detection(lbl, conf, source, bbox, class_name=cls_name, image=image)
+        res = classify_weapon_detection(lbl, conf, source, bbox, class_name=cls_name, image=image, return_reason=True)
+        state, target_label, reason = res  # type: ignore[misc]
+
+        if hasattr(d, "verification_reason"):
+            d.verification_reason = reason
+        lbl_key = f"{lbl}@{conf:.2f}"
+        reasons[lbl_key] = reason
 
         if state == "WEAPON":
             if hasattr(d, "weapon_status"):
                 d.weapon_status = "verified"
             verified.append(d)
             logger.info(
-                "[WEAPON] Candidate #%d VERIFIED: class=%s label=%s yolo_conf=%.2f state=VERIFIED_WEAPON",
-                idx, cls_name, target_label, conf
+                "[WEAPON] Candidate #%d VERIFIED: class=%s label=%s yolo_conf=%.2f state=VERIFIED_WEAPON reason=%s",
+                idx, cls_name, target_label, conf, reason
             )
         elif state == "UNCERTAIN":
             if hasattr(d, "weapon_status"):
                 d.weapon_status = "candidate"
             uncertain.append(d)
-            reasons[f"{lbl}@{conf:.2f}"] = "INSUFFICIENT_VISUAL_EVIDENCE"
             logger.info(
-                "[WEAPON] Candidate #%d UNCERTAIN: class=%s yolo_conf=%.2f state=UNCERTAIN (candidate)",
-                idx, cls_name, conf
+                "[WEAPON] Candidate #%d UNCERTAIN: class=%s yolo_conf=%.2f state=UNCERTAIN (candidate) reason=%s",
+                idx, cls_name, conf, reason
             )
         else:
             if hasattr(d, "weapon_status"):
                 d.weapon_status = "rejected"
             rejected.append(d)
-            reasons[f"{lbl}@{conf:.2f}"] = "LOW_CONFIDENCE_OR_INVALID_SHAPE"
             logger.info(
-                "[WEAPON] Candidate #%d REJECTED: class=%s yolo_conf=%.2f state=NOT_WEAPON",
-                idx, cls_name, conf
+                "[WEAPON] Candidate #%d REJECTED: class=%s yolo_conf=%.2f state=NOT_WEAPON reason=%s",
+                idx, cls_name, conf, reason
             )
 
     canonical_subtype = "weapon"
@@ -419,21 +453,28 @@ def verify_detection(label: str, confidence: float, source: str = "general") -> 
             label=label,
             confidence=confidence,
             source=source,
+            verification_reason="UNSUPPORTED_CLASS",
         )
 
-    state, target_label = classify_weapon_detection(label, confidence, source)
+    res = classify_weapon_detection(label, confidence, source, return_reason=True)
+    state, target_label, reason = res  # type: ignore[misc]
+
     if state == "WEAPON":
         status = "verified"
+        resolved_label = target_label
     elif state == "UNCERTAIN":
         status = "candidate"
+        resolved_label = "candidate_weapon" if (label in WEAPON_LABELS or label.lower() in WEAPON_LABELS) else label
     else:
         status = "non_weapon"
+        resolved_label = label
 
     return WeaponVerification(
         status=status,
-        label=target_label if status == "verified" else label,
+        label=resolved_label,
         confidence=confidence,
         source=source,
+        verification_reason=reason,
     )
 
 
@@ -459,7 +500,7 @@ def verified_counts(detections: list) -> tuple[int, int]:
     return verified, candidate
 
 
-def apply_to_detections(detections: list) -> list:
+def apply_to_detections(detections: list, image: Any | None = None) -> list:
     """
     Mutate a list of `Detection` objects: return a NEW list with verified weapon labels and statuses.
     """
@@ -469,9 +510,10 @@ def apply_to_detections(detections: list) -> list:
     for d in detections:
         cls_name = getattr(d, "class_name", "")
         raw_label = d.label or cls_name
-        state, target_label = classify_weapon_detection(
-            raw_label, d.confidence, getattr(d, "source", "general"), d.bbox, class_name=cls_name
+        res = classify_weapon_detection(
+            raw_label, d.confidence, getattr(d, "source", "general"), d.bbox, class_name=cls_name, image=image, return_reason=True
         )
+        state, target_label, reason = res  # type: ignore[misc]
         new_label = d.label
         status = "non_weapon"
 
@@ -494,6 +536,7 @@ def apply_to_detections(detections: list) -> list:
                 bbox=d.bbox,
                 source=d.source,
                 weapon_status=status,
+                verification_reason=reason,
             )
         )
     return out
@@ -508,132 +551,184 @@ def apply_human_review_to_analysis(
 ):
     """
     Return a NEW `EvidenceAnalysis` with weapon-class detections
-    suppressed when the human reviewer REJECTED them.
+    confirmed or rejected by human review (Requirement 4).
 
-    Parameters
-    ----------
-    analysis         : `EvidenceAnalysis` (or a duck-typed equivalent).
-    human_decisions  : `{detection_key: decision}` mapping. `decision`
-                       is one of "CONFIRM" / "REJECT" / "UNCERTAIN".
-                       Keys are constructed by the caller — typically
-                       ``f"{label}@{confidence:.2f}"`` or any stable
-                       per-detection string. REJECTED keys remove
-                       every matching weapon-class detection from
-                       the analysis; CONFIRMED/UNCERTAIN do nothing
-                       here (they're informational).
+    When an investigator rejects a candidate/verified weapon:
+    - Excluded from detections and counts_by_label.
+    - Excluded from verified_weapon_count and candidate_weapon_count.
+    - Excluded from severity scoring (severity recalculated).
+    - If verified weapon count drops to 0, has_threat becomes False.
 
-    Returns
-    -------
-    A new `EvidenceAnalysis` with:
-      * `detections` filtered: REJECTED detections removed.
-      * `counts_by_label` updated: every weapon-class count
-         decremented by the number of REJECTED hits.
-      * `has_threat` flipped to False if all verified weapons are
-         rejected.
-      * `severity_score` post-processed through `analysis.with_counts`
-         if available (so removing verified weapons actually lowers
-         severity instead of leaving a stale number).
+    When an investigator confirms a candidate weapon:
+    - Promoted to verified weapon.
+    - Verified weapon count incremented.
+    - Severity score and threat updated.
     """
     if analysis is None:
         return analysis
     if not human_decisions:
         return analysis
 
+    has_active_decisions = any(dec in {"CONFIRM", "REJECT"} for dec in human_decisions.values())
+    if not has_active_decisions:
+        return analysis
+
     rejected_labels = {
         key.split("@", 1)[0] for key, dec in human_decisions.items()
         if dec == "REJECT"
     }
-    if not rejected_labels:
-        return analysis
 
     detections = getattr(analysis, "detections", None)
-    if not detections:
-        new_counts = dict(getattr(analysis, "counts_by_label", {}) or {})
-        for label in rejected_labels:
-            if label in new_counts:
-                new_counts[label] = 0
-
-        new_v_weapon = new_counts.get("weapon", 0) + new_counts.get("knife", 0)
-        new_c_weapon = new_counts.get("candidate_weapon", 0)
-        has_threat = bool(getattr(analysis, "has_threat", False) and new_v_weapon > 0)
-        try:
-            from dataclasses import replace
-            return replace(
-                analysis,
-                counts_by_label=new_counts,
-                has_threat=has_threat,
-                verified_weapon_count=new_v_weapon,
-                candidate_weapon_count=new_c_weapon,
-                weapon_count=new_v_weapon,
-            )
-        except (TypeError, ValueError, AttributeError) as exc:
-            from core.logging import get_logger
-            get_logger(__name__).warning("dataclasses.replace failed: %s", exc)
-            analysis.counts_by_label = new_counts
-            analysis.has_threat = has_threat
-            analysis.verified_weapon_count = new_v_weapon
-            analysis.candidate_weapon_count = new_c_weapon
-            analysis.weapon_count = new_v_weapon
-            return analysis
+    new_counts = dict(getattr(analysis, "counts_by_label", {}) or {})
 
     new_detections = []
-    removed_by_label: dict[str, int] = {}
-    for d in detections:
-        label = getattr(d, "label", "")
-        key = f"{label}@{getattr(d, 'confidence', 0.0):.2f}"
-        decision = human_decisions.get(key)
-        if decision == "REJECT" or (label in rejected_labels and decision == "REJECT"):
-            removed_by_label[label] = removed_by_label.get(label, 0) + 1
-            continue
-        new_detections.append(d)
+    if detections:
+        for d in detections:
+            label = getattr(d, "label", "")
+            conf = getattr(d, "confidence", 0.0)
+            key = f"{label}@{conf:.2f}"
+            dec = human_decisions.get(key)
+            if not dec and hasattr(d, "class_name"):
+                dec = human_decisions.get(f"{d.class_name}@{conf:.2f}")
 
-    # Rebuild counts_by_label from the surviving detections so it stays
-    # consistent with `detections`. Verified-only weapons are removed
-    # fully; candidate weapons, too (the human has the final word).
-    new_counts: dict[str, int] = {}
-    for d in new_detections:
-        new_counts[d.label] = new_counts.get(d.label, 0) + 1
+            if dec == "REJECT" or (label in rejected_labels and dec == "REJECT"):
+                continue
 
-    new_v_weapon = new_counts.get("weapon", 0) + new_counts.get("knife", 0)
+            if dec == "CONFIRM":
+                if hasattr(d, "weapon_status"):
+                    d.weapon_status = "verified"
+                if hasattr(d, "verification_reason"):
+                    d.verification_reason = "CONFIRMED_BY_INVESTIGATOR"
+                if label == "candidate_weapon":
+                    cls_n = getattr(d, "class_name", "weapon")
+                    d.label = "knife" if cls_n == "knife" else "weapon"
+
+            new_detections.append(d)
+
+        new_counts = {}
+        for d in new_detections:
+            new_counts[d.label] = new_counts.get(d.label, 0) + 1
+    else:
+        for key, dec in human_decisions.items():
+            lbl = key.split("@", 1)[0]
+            if dec == "REJECT":
+                if lbl in new_counts:
+                    new_counts[lbl] = 0
+            elif dec == "CONFIRM":
+                if lbl == "candidate_weapon":
+                    new_counts["candidate_weapon"] = max(0, new_counts.get("candidate_weapon", 0) - 1)
+                    new_counts["weapon"] = new_counts.get("weapon", 0) + 1
+
+    _WEAPON_CLASSES = {
+        "weapon", "knife", "revolver", "Revolver", "shotgun", "Shotgun",
+        "gun", "Gun", "pistol", "Pistol", "rifle", "Rifle", "handgun", "Handgun",
+        "firearm", "Firearm", "grenade", "Grenade"
+    }
+    new_v_weapon = sum(new_counts.get(k, 0) for k in _WEAPON_CLASSES)
     new_c_weapon = new_counts.get("candidate_weapon", 0)
     new_person = new_counts.get("person", 0)
+    new_vehicle = new_counts.get("vehicle", 0)
+    new_bag = new_counts.get("bag", 0)
+    total_objects = sum(new_counts.values())
 
-    # If no verified weapons remain, the threat flag must be cleared.
-    has_threat = bool(
-        getattr(analysis, "has_threat", False)
-        and new_v_weapon > 0
+    has_threat = new_v_weapon > 0
+
+    from models.evidence_analyzer import (
+        _compute_severity,
+        _severity_level,
+        _suggest_category,
+        _build_observations,
+    )
+    avg_conf = getattr(analysis, "average_confidence", 0.0)
+    new_severity = _compute_severity(
+        verified_weapon_count=new_v_weapon,
+        candidate_weapon_count=new_c_weapon,
+        person_count=new_person,
+        vehicle_count=new_vehicle,
+        bag_count=new_bag,
+        avg_conf=avg_conf,
+    )
+    new_severity_level = _severity_level(new_severity)
+    present_labels = set(new_counts.keys())
+    if new_v_weapon > 0:
+        present_labels.add("verified_weapon")
+    new_suggested = _suggest_category(present_labels)
+    new_obs = _build_observations(
+        person_count=new_person,
+        verified_weapon_count=new_v_weapon,
+        candidate_weapon_count=new_c_weapon,
+        knife_count=new_counts.get("knife", 0),
+        bottle_count=new_counts.get("bottle", 0),
+        vehicle_count=new_vehicle,
+        bag_count=new_bag,
+        total_objects=total_objects,
+        source_type=getattr(analysis, "source_type", "image"),
+        frame_count=getattr(analysis, "frame_count", 1),
     )
 
-    # Rebuild the dataclass with the new fields.
     try:
         from dataclasses import replace, fields
-        valid_fields = {f.name for f in fields(analysis)}
-        kwargs = {
-            "counts_by_label": new_counts,
-            "has_threat": has_threat,
-            "verified_weapon_count": new_v_weapon,
-            "candidate_weapon_count": new_c_weapon,
-            "weapon_count": new_v_weapon,
-            "person_count": new_person,
-        }
+        valid_fields = {f.name for f in fields(analysis)} if hasattr(analysis, "__dataclass_fields__") else set()
+        kwargs: dict[str, Any] = {}
+        if "counts_by_label" in valid_fields:
+            kwargs["counts_by_label"] = new_counts
+        if "has_threat" in valid_fields:
+            kwargs["has_threat"] = has_threat
+        if "verified_weapon_count" in valid_fields:
+            kwargs["verified_weapon_count"] = new_v_weapon
+        if "candidate_weapon_count" in valid_fields:
+            kwargs["candidate_weapon_count"] = new_c_weapon
+        if "weapon_count" in valid_fields:
+            kwargs["weapon_count"] = new_v_weapon
+        if "person_count" in valid_fields:
+            kwargs["person_count"] = new_person
+        if "vehicle_count" in valid_fields:
+            kwargs["vehicle_count"] = new_vehicle
+        if "bag_count" in valid_fields:
+            kwargs["bag_count"] = new_bag
+        if "total_objects" in valid_fields:
+            kwargs["total_objects"] = total_objects
+        if "severity_score" in valid_fields:
+            kwargs["severity_score"] = new_severity
+        if "severity_level" in valid_fields:
+            kwargs["severity_level"] = new_severity_level
+        if "suggested_category" in valid_fields:
+            kwargs["suggested_category"] = new_suggested
+        if "key_observations" in valid_fields:
+            kwargs["key_observations"] = new_obs
+        if "human_decisions" in valid_fields:
+            kwargs["human_decisions"] = dict(human_decisions)
         if "detections" in valid_fields:
             kwargs["detections"] = new_detections
 
         updated_obj = replace(analysis, **kwargs)
-        setattr(updated_obj, "detections", new_detections)
+        if hasattr(updated_obj, "detections"):
+            setattr(updated_obj, "detections", new_detections)
         return updated_obj
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, AttributeError) as exc:
         from core.logging import get_logger
-        get_logger(__name__).warning("dataclasses.replace failed on analysis object: %s", exc)
-        setattr(analysis, "detections", new_detections)
-        try:
+        get_logger(__name__).warning("dataclasses.replace fallback on analysis object: %s", exc)
+        if hasattr(analysis, "counts_by_label"):
             analysis.counts_by_label = new_counts
+        if hasattr(analysis, "has_threat"):
             analysis.has_threat = has_threat
+        if hasattr(analysis, "verified_weapon_count"):
             analysis.verified_weapon_count = new_v_weapon
+        if hasattr(analysis, "candidate_weapon_count"):
             analysis.candidate_weapon_count = new_c_weapon
+        if hasattr(analysis, "weapon_count"):
             analysis.weapon_count = new_v_weapon
+        if hasattr(analysis, "person_count"):
             analysis.person_count = new_person
-        except (AttributeError, TypeError) as attr_exc:
-            get_logger(__name__).warning("Failed to set mutated attributes on analysis object: %s", attr_exc)
+        if hasattr(analysis, "severity_score"):
+            analysis.severity_score = new_severity
+        if hasattr(analysis, "severity_level"):
+            analysis.severity_level = new_severity_level
+        if hasattr(analysis, "suggested_category"):
+            analysis.suggested_category = new_suggested
+        if hasattr(analysis, "human_decisions"):
+            analysis.human_decisions = dict(human_decisions)
+        if hasattr(analysis, "detections"):
+            setattr(analysis, "detections", new_detections)
         return analysis
 

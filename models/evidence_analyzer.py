@@ -103,6 +103,13 @@ def analyze(input_data: AnalysisInput) -> EvidenceAnalysis:
         key_observations=observations,
         has_threat=has_threat,
         frame_count=input_data.frame_count,
+        model_name=getattr(input_data, "model_name", "yolov8n"),
+        model_version=getattr(input_data, "model_version", ""),
+        model_weights=getattr(input_data, "model_weights", {}),
+        config_metadata=getattr(input_data, "config_metadata", {}),
+        raw_detections_count=getattr(input_data, "raw_detections_count", 0),
+        rejected_count=getattr(input_data, "rejected_count", 0),
+        human_decisions=getattr(input_data, "human_decisions", {}),
     )
 
 
@@ -180,6 +187,7 @@ def _build_observations(
 
     if total_objects == 0:
         obs.append("No crime-relevant objects detected in the provided media.")
+        obs.append("Negative finding: Items were not detected in analyzed frames; this is not proof that an item or activity is absent.")
         return obs
 
     obs.append(
@@ -189,7 +197,7 @@ def _build_observations(
 
     # Persons
     if person_count == 0:
-        obs.append("No persons detected.")
+        obs.append("No persons detected in analyzed frames.")
     elif person_count == 1:
         obs.append("1 person detected at the scene.")
     else:
@@ -198,7 +206,10 @@ def _build_observations(
     # Weapons — verified and candidate are surfaced SEPARATELY so the
     # investigator (and the AI summary) can never blur the line.
     if verified_weapon_count == 0 and candidate_weapon_count == 0:
+        if source_type == "image":
+            obs.append("No verified weapon detected in this image.")
         obs.append("No verified weapons detected.")
+        obs.append("Weapons not detected in analyzed frames (negative results are not proof that weapons are absent).")
     else:
         if verified_weapon_count > 0:
             obs.append(
@@ -215,7 +226,7 @@ def _build_observations(
 
     # Vehicles
     if vehicle_count == 0:
-        obs.append("No vehicles detected.")
+        obs.append("No vehicles detected in analyzed frames.")
     else:
         obs.append(f"{vehicle_count} vehicle(s) detected near the scene.")
 
