@@ -211,14 +211,15 @@ def verify_weapon_crop_visual(
         ch = max(1, cy2 - cy1)
         aspect = max(cw, ch) / max(1.0, min(cw, ch))
 
-        if edge_ratio >= 0.04 and 1.1 <= aspect <= 6.0:
-            return 0.10, "FIREARM_STRUCTURE_VALIDATED"
-        elif edge_ratio < 0.015:
-            return -0.12, "FLAT_GRADIENT_NOISE"
-        elif aspect > 8.0:
+        # Firearms (revolvers, pistols, handguns) typically range from compact square (aspect ~1.0) to long barrel (~6.5)
+        if edge_ratio >= 0.025 and 1.0 <= aspect <= 7.0:
+            return 0.12, "FIREARM_STRUCTURE_VALIDATED"
+        elif edge_ratio < 0.010:
+            return -0.15, "FLAT_GRADIENT_NOISE"
+        elif aspect > 9.0:
             return -0.15, "EXTREME_ASPECT_RATIO"
         else:
-            return 0.02, "NEUTRAL_CROP_VISUAL"
+            return 0.03, "NEUTRAL_CROP_VISUAL"
     except (RuntimeError, OSError, ValueError, TypeError, AttributeError) as exc:
         return 0.0, f"CROP_VERIFICATION_ERROR: {exc}"
 
@@ -275,13 +276,13 @@ def classify_weapon_detection(
             reason = "TINY_CROP"
             return ("NOT_WEAPON", target_label, reason) if return_reason else ("NOT_WEAPON", target_label)
 
-        # Rejection Rule 1B: Extreme aspect ratio (> 8.0)
-        if aspect_ratio > 8.0:
+        # Rejection Rule 1B: Extreme aspect ratio (> 8.5)
+        if aspect_ratio > 8.5:
             reason = "EXTREME_ASPECT_RATIO"
             return ("NOT_WEAPON", target_label, reason) if return_reason else ("NOT_WEAPON", target_label)
 
-        # Rejection Rule 1C: Excessive screen area (> 50% screen)
-        if rel_area is not None and rel_area > 0.50:
+        # Rejection Rule 1C: Full-frame artifact (> 95% screen)
+        if rel_area is not None and rel_area > 0.95:
             reason = "EXCESSIVE_SCREEN_AREA"
             return ("NOT_WEAPON", target_label, reason) if return_reason else ("NOT_WEAPON", target_label)
 
@@ -301,20 +302,32 @@ def classify_weapon_detection(
     score = confidence + visual_boost
 
     # Source credibility boost (specialized forensic models)
-    if source in {"weapon", "threat-weapon", "temporal"} and confidence >= 0.32:
+    if source in {"weapon", "threat-weapon", "temporal"} and confidence >= WEAPON_CONF_THRESHOLD:
         score += 0.08
 
     # Specific subclass boost (specific firearm classes have lower false positive priors)
-    if subtype in {"revolver", "pistol", "handgun", "rifle", "shotgun"}:
-        score += 0.07
+    if subtype in {"revolver", "pistol", "handgun", "rifle", "shotgun", "gun", "firearm"}:
+        score += 0.08
 
-    # Shape & scale quality boost
-    if 1.1 <= aspect_ratio <= 5.5 and (rel_area is None or 0.0005 <= rel_area <= 0.25):
+    # Shape & scale quality boost (revolvers/pistols can have aspect ~1.0 - 6.0, rel_area up to 0.90 for evidence photos)
+    if 1.0 <= aspect_ratio <= 6.0 and (rel_area is None or 0.0003 <= rel_area <= 0.90):
         score += 0.05
 
     # Stage 4: Threshold Evaluation
-    if score >= WEAPON_VERIFY_THRESHOLD and confidence >= 0.32:
-        reason = visual_diag if visual_diag in {"FIREARM_STRUCTURE_VALIDATED"} else "MULTI_SIGNAL_STRUCTURE_VERIFIED"
+    # Verification requires validated visual structure, OR specialized weapon model with confirmed firearm subtype
+    is_visually_validated = (visual_diag == "FIREARM_STRUCTURE_VALIDATED")
+    is_specialized_firearm = (
+        source in {"weapon", "threat-weapon", "temporal"}
+        and subtype in {"revolver", "pistol", "handgun", "rifle", "shotgun", "gun", "firearm"}
+        and confidence >= 0.38
+    )
+
+    if (
+        score >= WEAPON_VERIFY_THRESHOLD
+        and confidence >= WEAPON_CONF_THRESHOLD
+        and (is_visually_validated or is_specialized_firearm or confidence >= 0.75)
+    ):
+        reason = visual_diag if is_visually_validated else "MULTI_SIGNAL_STRUCTURE_VERIFIED"
         return ("WEAPON", target_label, reason) if return_reason else ("WEAPON", target_label)
     elif confidence >= WEAPON_CONF_THRESHOLD:
         reason = "INSUFFICIENT_VISUAL_EVIDENCE"

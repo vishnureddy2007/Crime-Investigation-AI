@@ -410,9 +410,9 @@ def _per_file_metrics(detection: DetectionResult) -> dict[str, int]:
             candidate_weapon_count += 1
         elif lbl == "bottle":
             bottle_count += 1
-        elif lbl in ("weapon", "gun", "pistol", "rifle", "handgun", "firearm"):
+        elif lbl in ("weapon", "gun", "pistol", "rifle", "handgun", "firearm", "revolver", "Revolver", "shotgun", "Shotgun"):
             weapon_count += 1
-            if lbl in ("gun", "pistol", "rifle", "handgun", "firearm"):
+            if lbl in ("gun", "pistol", "rifle", "handgun", "firearm", "revolver", "Revolver", "shotgun", "Shotgun"):
                 gun_count += 1
     return {
         "person_count":  counts.get("person", 0),
@@ -447,9 +447,9 @@ def _per_file_video_metrics(video: VideoAnalysisResult) -> dict[str, int]:
                 candidate_weapon_count += 1
             elif lbl == "bottle":
                 bottle_count += 1
-            elif lbl in ("weapon", "gun", "pistol", "rifle", "handgun", "firearm"):
+            elif lbl in ("weapon", "gun", "pistol", "rifle", "handgun", "firearm", "revolver", "Revolver", "shotgun", "Shotgun"):
                 weapon_count += 1
-                if lbl in ("gun", "pistol", "rifle", "handgun", "firearm"):
+                if lbl in ("gun", "pistol", "rifle", "handgun", "firearm", "revolver", "Revolver", "shotgun", "Shotgun"):
                     gun_count += 1
     return {
         "person_count":  counts.get("person", 0),

@@ -548,14 +548,14 @@ class MultiSourceDetector:
             if d.class_name in COCO_WEAPON_CLASSES
         ]
 
-        # Dedicated weapon model: Pass 1 (high-res RGB) + Pass 2 (conditional CLAHE contrast-enhanced)
+        # Dedicated weapon model: Pass 1 (native 640 RGB) + Pass 2 (conditional CLAHE contrast-enhanced)
         weapon_extra: list[Detection] = []
         if self._weapon is None:
             path = self._weapon_model_path()
             if path is not None and self._weapon_attempted_path != str(path):
                 self._maybe_init_weapon(path)
         if self._weapon is not None:
-            w_conf = WEAPON_CONF_THRESHOLD if confidence is None else min(confidence, WEAPON_CONF_THRESHOLD)
+            w_conf = min(0.20, confidence if confidence is not None else WEAPON_CONF_THRESHOLD)
             pass1: list[Detection] = []
             pass2: list[Detection] = []
             try:
@@ -564,21 +564,21 @@ class MultiSourceDetector:
                     confidence=w_conf,
                     iou=iou_thr,
                     source_tag="weapon",
-                    imgsz=1280,
+                    imgsz=640,
                 )
             except (RuntimeError, OSError):
                 pass1 = []
 
             # Only run CLAHE pass if Pass 1 didn't yield a high-confidence weapon detection
-            if not any(d.confidence >= 0.70 for d in pass1):
+            if not any(d.confidence >= 0.65 for d in pass1):
                 try:
                     enhanced_img = _enhance_contrast(image)
                     pass2 = self._weapon.detect_image_raw(
                         enhanced_img, source_name=source_name,
-                        confidence=max(0.40, w_conf + 0.10),
+                        confidence=w_conf,
                         iou=iou_thr,
                         source_tag="weapon",
-                        imgsz=1280,
+                        imgsz=640,
                     )
                 except (RuntimeError, OSError):
                     pass2 = []
@@ -589,8 +589,8 @@ class MultiSourceDetector:
                 bh = d.bbox.y2 - d.bbox.y1
                 rel_area = (bw * bh) / max(1.0, float(W * H))
                 aspect = max(bw, bh) / max(1.0, min(bw, bh))
-                if bw >= 8 and bh >= 8 and (rel_area >= 0.0003 or d.confidence >= 0.80) and (aspect <= 8.0 or d.confidence >= 0.80):
-                    if bw * bh < 0.50 * W * H:
+                if bw >= 6 and bh >= 6 and (rel_area >= 0.0002 or d.confidence >= 0.70) and (aspect <= 8.5 or d.confidence >= 0.70):
+                    if bw * bh <= 0.95 * W * H:
                         weapon_extra.append(d)
 
         # Broader threat weapon model (knife + explosion + grenade + Gun).
@@ -600,25 +600,25 @@ class MultiSourceDetector:
             if t_path is not None and self._threat_weapon_attempted_path != str(t_path):
                 self._maybe_init_threat_weapon(t_path)
         if self._threat_weapon is not None:
-            t_conf = WEAPON_CONF_THRESHOLD if confidence is None else min(confidence, WEAPON_CONF_THRESHOLD)
+            t_conf = min(0.20, confidence if confidence is not None else WEAPON_CONF_THRESHOLD)
             t_pass1: list[Detection] = []
             t_pass2: list[Detection] = []
             try:
                 t_pass1 = self._threat_weapon.detect_image_raw(
                     image, source_name=source_name,
                     confidence=t_conf, iou=iou_thr,
-                    source_tag="threat-weapon", imgsz=1280,
+                    source_tag="threat-weapon", imgsz=640,
                 )
             except (RuntimeError, OSError):
                 t_pass1 = []
 
-            if not any(d.confidence >= 0.70 for d in t_pass1):
+            if not any(d.confidence >= 0.65 for d in t_pass1):
                 try:
                     t_enhanced = _enhance_contrast(image)
                     t_pass2 = self._threat_weapon.detect_image_raw(
                         t_enhanced, source_name=source_name,
-                        confidence=max(0.40, t_conf + 0.10), iou=iou_thr,
-                        source_tag="threat-weapon", imgsz=1280,
+                        confidence=t_conf, iou=iou_thr,
+                        source_tag="threat-weapon", imgsz=640,
                     )
                 except (RuntimeError, OSError):
                     t_pass2 = []
@@ -629,8 +629,8 @@ class MultiSourceDetector:
                 bh = d.bbox.y2 - d.bbox.y1
                 rel_area = (bw * bh) / max(1.0, float(W * H))
                 aspect = max(bw, bh) / max(1.0, min(bw, bh))
-                if bw >= 8 and bh >= 8 and (rel_area >= 0.0003 or d.confidence >= 0.80) and (aspect <= 8.0 or d.confidence >= 0.80):
-                    if bw * bh < 0.50 * W * H:
+                if bw >= 6 and bh >= 6 and (rel_area >= 0.0002 or d.confidence >= 0.70) and (aspect <= 8.5 or d.confidence >= 0.70):
+                    if bw * bh <= 0.95 * W * H:
                         threat_extra.append(d)
 
         raw_all = general_raw + weapon_scan_raw + weapon_extra + threat_extra

@@ -101,7 +101,13 @@ def _render_file_evidence_card(file_evidence: FileEvidence) -> None:
                 st.markdown(f"**Analyzed Timestamp:** `{getattr(d, 'timestamp', file_evidence.timestamp)}`")
 
         # Optional Investigator Audit & Override Section (Section 15)
-        weapon_dets = [det for det in d.detections if det.label in {"weapon", "knife", "candidate_weapon"} or "weapon" in det.class_name.lower()]
+        weapon_dets = [
+            det for det in d.detections
+            if getattr(det, "weapon_status", "") in {"verified", "candidate"}
+            or det.label.lower() in {"weapon", "knife", "candidate_weapon", "gun", "pistol", "rifle", "handgun", "revolver", "shotgun", "firearm"}
+            or det.class_name.lower() in {"weapon", "knife", "candidate_weapon", "gun", "pistol", "rifle", "handgun", "revolver", "shotgun", "firearm"}
+            or "weapon" in det.class_name.lower()
+        ]
         if weapon_dets:
             with st.expander("🛡️ Investigator Audit & Manual Override", expanded=True):
                 st.caption("AI-generated weapon labels are suggestions for human review. Confirm or reject each candidate below:")
@@ -347,10 +353,34 @@ def _render_upload_and_detect_tab() -> None:
     batch_res = st.session_state.get(SessionKeys.LAST_BATCH_RESULT)
     if batch_res is not None and batch_res.files:
         st.markdown("---")
-        st.markdown("### Detection Results")
+        res_hdr1, res_hdr2 = st.columns([2, 1])
+        with res_hdr1:
+            st.markdown("### Detection Results")
+        with res_hdr2:
+            if st.button("📄 Generate / View AI Report ➔", type="primary", use_container_width=True, key="btn_goto_report_top"):
+                st.session_state["nav_selection"] = "Reports"
+                st.rerun()
+
         for f_ev in batch_res.files:
             with st.container(border=True):
                 _render_file_evidence_card(f_ev)
+
+        # Connection and Next Actions Banner
+        st.markdown("---")
+        st.markdown("#### 🚀 Next Investigation Actions")
+        act_col1, act_col2, act_col3 = st.columns(3)
+        with act_col1:
+            if st.button("📄 View & Export AI Forensic Report", type="primary", use_container_width=True, key="btn_goto_report_bottom"):
+                st.session_state["nav_selection"] = "Reports"
+                st.rerun()
+        with act_col2:
+            if st.button("🧠 AI Situation Analysis & Narratives", use_container_width=True, key="btn_goto_ai_analysis_bottom"):
+                st.session_state["nav_selection"] = "AI Analysis"
+                st.rerun()
+        with act_col3:
+            if st.button("🎬 Generate Investigation Video", use_container_width=True, key="btn_goto_video_bottom"):
+                st.session_state["nav_selection"] = "Investigation Video"
+                st.rerun()
 
 
 def _render_evidence_analysis_tab() -> None:
@@ -368,6 +398,16 @@ def _render_evidence_analysis_tab() -> None:
     c2.metric("Severity Level", analysis.severity_level.upper())
     c3.metric("Verified Weapons", analysis.verified_weapon_count)
     c4.metric("Candidate Weapons", analysis.candidate_weapon_count, help="Pending investigator verification")
+
+    btn_c1, btn_c2 = st.columns([1, 1])
+    with btn_c1:
+        if st.button("📄 Proceed to AI Forensic Report ➔", type="primary", use_container_width=True, key="btn_tab2_goto_report"):
+            st.session_state["nav_selection"] = "Reports"
+            st.rerun()
+    with btn_c2:
+        if st.button("🧠 Explore AI Situation Insights", use_container_width=True, key="btn_tab2_goto_insights"):
+            st.session_state["nav_selection"] = "AI Analysis"
+            st.rerun()
 
     if analysis.has_threat:
         st.error("⚠️ THREAT DETECTED: Verified weapon or high-threat item detected in active evidence.")
