@@ -36,7 +36,7 @@ from utils.video_io import is_allowed_video
 
 def _get_processor() -> BatchEvidenceProcessor:
     """Return a batch processor wired to the multi-source detector."""
-    detector = get_multi_source_detector()
+    detector = get_multi_source_detector(force_reload=True)
     return BatchEvidenceProcessor(detector=detector)
 
 

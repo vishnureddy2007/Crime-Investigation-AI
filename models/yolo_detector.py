@@ -729,10 +729,10 @@ def get_detector(
     return YOLODetector(model_name=model_name, confidence=confidence, iou=iou)
 
 
-def get_multi_source_detector() -> MultiSourceDetector:
+def get_multi_source_detector(force_reload: bool = False) -> MultiSourceDetector:
     """Return a cached singleton MultiSourceDetector."""
     global _MULTI_SOURCE_SINGLETON
-    if _MULTI_SOURCE_SINGLETON is None:
+    if _MULTI_SOURCE_SINGLETON is None or force_reload:
         _MULTI_SOURCE_SINGLETON = MultiSourceDetector()
     return _MULTI_SOURCE_SINGLETON
 

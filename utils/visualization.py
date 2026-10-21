@@ -7,18 +7,28 @@ from typing import Iterable
 from PIL import Image, ImageDraw, ImageFont
 from models.schemas import Detection
 
-# A simple, colorblind-friendly palette
+# A forensic, colorblind-friendly palette
 _BOX_COLORS: dict[str, str] = {
-    "person":  "#E63946",   # red
-    "knife":   "#1D3557",   # dark blue
-    "weapon":  "#1D3557",
-    "vehicle": "#2A9D8F",   # teal
-    "bag":     "#F4A261",   # orange
-    "bottle":  "#8338EC",   # purple
+    "person":    "#E63946",   # red
+    "knife":     "#00E5FF",   # bright forensic cyan
+    "weapon":    "#00E5FF",   # bright forensic cyan
+    "gun":       "#00E5FF",
+    "revolver":  "#00E5FF",
+    "pistol":    "#00E5FF",
+    "handgun":   "#00E5FF",
+    "vehicle":   "#2A9D8F",   # teal
+    "bag":       "#F4A261",   # orange
+    "bottle":    "#8338EC",   # purple
 }
 
-def _color_for(label: str) -> str:
-    return _BOX_COLORS.get(label, "#264653")
+def _color_for(det: Any) -> str:
+    if hasattr(det, "weapon_status"):
+        if det.weapon_status == "verified":
+            return "#00E5FF"  # High-visibility forensic cyan
+        elif det.weapon_status == "candidate":
+            return "#FFD166"  # Review needed amber
+    lbl = getattr(det, "label", str(det))
+    return _BOX_COLORS.get(lbl, "#264653")
 
 def _font(size: int = 14) -> ImageFont.ImageFont:
     try:
@@ -47,13 +57,21 @@ def draw_detections(
 
     for det in detections:
         x1, y1, x2, y2 = det.bbox.x1, det.bbox.y1, det.bbox.x2, det.bbox.y2
-        color = _color_for(det.label)
+        color = _color_for(det)
 
         # 1. Draw the Bounding Box
         draw.rectangle([(x1, y1), (x2, y2)], outline=color, width=box_width)
 
         # 2. Draw Label + Confidence
-        text = f"{det.label} {det.confidence:.2f}"
+        status = getattr(det, "weapon_status", "")
+        if status == "verified":
+            cls_disp = getattr(det, "class_name", det.label).title()
+            text = f"{cls_disp} {det.confidence:.2f} [VERIFIED]"
+        elif status == "candidate":
+            cls_disp = getattr(det, "class_name", det.label).title()
+            text = f"{cls_disp} {det.confidence:.2f} [REVIEW]"
+        else:
+            text = f"{det.label} {det.confidence:.2f}"
         
         try:
             text_w = draw.textlength(text, font=font)
