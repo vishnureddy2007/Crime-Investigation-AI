@@ -54,14 +54,22 @@ def _warn(message: str) -> None:
 # ----------------------------------------------------------------------
 # Public auto-save hooks
 # ----------------------------------------------------------------------
-def auto_save_last_analysis(db_path: Path | None = None) -> int | None:
+def auto_save_last_analysis(
+    db_path: Path | None = None,
+    analysis_override: Any | None = None,
+) -> int | None:
     """Save `last_analysis` to the DB if it exists and hasn't been saved yet."""
     try:
-        analysis = st.session_state.get("last_analysis")
+        # Backward-compatible duck-typing if analysis object was passed as first arg
+        if db_path is not None and not isinstance(db_path, (str, Path)):
+            analysis_override = db_path
+            db_path = None
+
+        analysis = analysis_override if analysis_override is not None else st.session_state.get("last_analysis")
         if analysis is None:
             return None
         existing_id = st.session_state.get("last_analysis_db_id")
-        if existing_id is not None:
+        if existing_id is not None and analysis_override is None:
             return int(existing_id)
 
         path = _resolve_path(db_path)
@@ -71,6 +79,7 @@ def auto_save_last_analysis(db_path: Path | None = None) -> int | None:
         new_id = save_analysis(path, case_id, analysis)
         st.session_state["last_analysis_db_id"] = new_id
         st.session_state["last_analysis_case_id"] = case_id
+        st.session_state["current_case_id"] = case_id
         return new_id
     except Exception as exc:
         _warn(f"⚠️ Database auto-save failed for analysis: {exc}")

@@ -578,7 +578,7 @@ class MultiSourceDetector:
                         confidence=w_conf,
                         iou=iou_thr,
                         source_tag="weapon",
-                        imgsz=640,
+                        imgsz=1280,
                     )
                 except (RuntimeError, OSError):
                     pass2 = []
@@ -618,7 +618,7 @@ class MultiSourceDetector:
                     t_pass2 = self._threat_weapon.detect_image_raw(
                         t_enhanced, source_name=source_name,
                         confidence=t_conf, iou=iou_thr,
-                        source_tag="threat-weapon", imgsz=640,
+                        source_tag="threat-weapon", imgsz=1280,
                     )
                 except (RuntimeError, OSError):
                     t_pass2 = []

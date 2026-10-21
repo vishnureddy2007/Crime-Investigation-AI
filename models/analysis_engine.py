@@ -151,7 +151,16 @@ def build_combined_analysis(
     observations = [summary_line] + observations
 
     model_versions = sorted({inp.model_version for inp in inputs if getattr(inp, "model_version", None)})
-    model_weights_set = sorted({inp.model_weights for inp in inputs if getattr(inp, "model_weights", None)})
+    model_weights_set: list[str] = []
+    for inp in inputs:
+        mw = getattr(inp, "model_weights", None)
+        if isinstance(mw, dict):
+            for k, v in mw.items():
+                short_hash = v[:8] if isinstance(v, str) and len(v) >= 8 else str(v)
+                model_weights_set.append(f"{k}:{short_hash}")
+        elif isinstance(mw, str) and mw:
+            model_weights_set.append(mw)
+    model_weights_set = sorted(set(model_weights_set))
     total_raw = sum(getattr(inp, "raw_detections_count", 0) for inp in inputs)
     total_rejected = sum(getattr(inp, "rejected_count", 0) for inp in inputs)
 

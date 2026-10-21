@@ -290,7 +290,17 @@ def _render_upload_and_detect_tab() -> None:
             st.session_state[SessionKeys.LAST_BATCH_RESULT] = batch_result
             if batch_result.combined_analysis:
                 st.session_state[SessionKeys.LAST_ANALYSIS] = batch_result.combined_analysis
-                case_id = auto_save_last_analysis(batch_result.combined_analysis)
+                auto_save_last_analysis(analysis_override=batch_result.combined_analysis)
+                case_id = st.session_state.get("last_analysis_case_id")
+                if case_id is None:
+                    from database.repository import save_case
+                    case_id = save_case(
+                        DATABASE_PATH,
+                        batch_result.combined_analysis.source_name,
+                        batch_result.combined_analysis.source_type,
+                    )
+                    st.session_state["last_analysis_case_id"] = case_id
+                st.session_state["current_case_id"] = case_id
 
                 if case_id is not None:
                     from database.repository import (
@@ -349,17 +359,51 @@ def _render_upload_and_detect_tab() -> None:
 
             st.success(f"Processing complete! Processed {len(batch_result.files)} file(s).")
 
-    # Render results if available
+    # Render results and immediate redirection workflow if available
     batch_res = st.session_state.get(SessionKeys.LAST_BATCH_RESULT)
     if batch_res is not None and batch_res.files:
         st.markdown("---")
-        res_hdr1, res_hdr2 = st.columns([2, 1])
-        with res_hdr1:
-            st.markdown("### Detection Results")
-        with res_hdr2:
-            if st.button("📄 Generate / View AI Report ➔", type="primary", use_container_width=True, key="btn_goto_report_top"):
+
+        # Professional Forensic Redirection Card
+        st.markdown(
+            """
+            <div style="background: linear-gradient(135deg, #161C2E 0%, #1A2338 100%);
+                        padding: 16px 20px; border-radius: 10px; border: 1px solid #00E5FF55;
+                        box-shadow: 0 4px 20px rgba(0, 229, 255, 0.08); margin-bottom: 20px;">
+                <div style="display: flex; align-items: center; justify-content: space-between;">
+                    <div>
+                        <span style="font-size: 12px; font-weight: 700; color: #00E5FF; letter-spacing: 0.08em; text-transform: uppercase;">
+                            ⚡ Forensic Workflow · Evidence Recorded & Ready for Processing
+                        </span>
+                        <div style="font-size: 15px; font-weight: 600; color: #F8FAFC; margin-top: 3px;">
+                            Select immediate next stage in forensic investigation:
+                        </div>
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        red_c1, red_c2, red_c3, red_c4 = st.columns(4)
+        with red_c1:
+            if st.button("📄 Generate AI Report ➔", type="primary", use_container_width=True, key="imm_btn_report"):
                 st.session_state["nav_selection"] = "Reports"
                 st.rerun()
+        with red_c2:
+            if st.button("🔍 Evidence Gallery ➔", use_container_width=True, key="imm_btn_evidence"):
+                st.session_state["nav_selection"] = "Evidence"
+                st.rerun()
+        with red_c3:
+            if st.button("🧠 AI Situation Insights ➔", use_container_width=True, key="imm_btn_insights"):
+                st.session_state["nav_selection"] = "AI Analysis"
+                st.rerun()
+        with red_c4:
+            if st.button("🎬 Render 2D Video ➔", use_container_width=True, key="imm_btn_video"):
+                st.session_state["nav_selection"] = "Investigation Video"
+                st.rerun()
+
+        st.markdown("### Detection Results")
 
         for f_ev in batch_res.files:
             with st.container(border=True):

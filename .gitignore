@@ -40,6 +40,8 @@ models/*.weights
 models/yolo*/
 
 # ---------- Generated outputs ----------
+images/user_revolver_test.jpg
+images/test_*.jpg
 outputs/reports/*.pdf
 outputs/reports/*.docx
 outputs/videos/*.mp4
