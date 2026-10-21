@@ -263,6 +263,9 @@ def classify_weapon_detection(
 
     # Stage 1: Bounding Box & Aspect Ratio Validation
     bw, bh, aspect_ratio, rel_area = 0.0, 0.0, 1.0, None
+    if (img_width is None or img_height is None) and image is not None and hasattr(image, "size"):
+        img_width, img_height = float(image.size[0]), float(image.size[1])
+
     if bbox is not None and hasattr(bbox, "width") and hasattr(bbox, "height"):
         bw, bh = bbox.width, bbox.height
         area = bbox.area if hasattr(bbox, "area") else bw * bh
@@ -281,9 +284,13 @@ def classify_weapon_detection(
             reason = "EXTREME_ASPECT_RATIO"
             return ("NOT_WEAPON", target_label, reason) if return_reason else ("NOT_WEAPON", target_label)
 
-        # Rejection Rule 1C: Full-frame artifact (> 95% screen)
-        if rel_area is not None and rel_area > 0.95:
+        # Rejection Rule 1C: Implausible handheld weapon scale (> 15% screen with low confidence, or > 95% screen)
+        if rel_area is not None and (rel_area > 0.95 or (rel_area > 0.15 and confidence < 0.65)):
             reason = "EXCESSIVE_SCREEN_AREA"
+            return ("NOT_WEAPON", target_label, reason) if return_reason else ("NOT_WEAPON", target_label)
+
+        if bw > 250 and bh > 200 and confidence < 0.60:
+            reason = "IMPLAUSIBLE_WEAPON_SCALE"
             return ("NOT_WEAPON", target_label, reason) if return_reason else ("NOT_WEAPON", target_label)
 
     # Stage 2: Crop Visual Feature Analysis (Runs for ALL candidates with crops)
@@ -301,9 +308,9 @@ def classify_weapon_detection(
     # Stage 3: Multi-Signal Verification Score Computation
     score = confidence + visual_boost
 
-    # Source credibility boost (specialized forensic models)
+    # Source credibility boost (specialized forensic models: +0.10)
     if source in {"weapon", "threat-weapon", "temporal"} and confidence >= WEAPON_CONF_THRESHOLD:
-        score += 0.08
+        score += 0.10
 
     # Specific subclass boost (specific firearm classes have lower false positive priors)
     if subtype in {"revolver", "pistol", "handgun", "rifle", "shotgun", "gun", "firearm"}:
@@ -318,14 +325,14 @@ def classify_weapon_detection(
     is_visually_validated = (visual_diag == "FIREARM_STRUCTURE_VALIDATED")
     is_specialized_firearm = (
         source in {"weapon", "threat-weapon", "temporal"}
-        and subtype in {"revolver", "pistol", "handgun", "rifle", "shotgun", "gun", "firearm"}
+        and subtype in {"revolver", "pistol", "handgun", "rifle", "shotgun", "gun", "firearm", "weapon"}
         and confidence >= 0.38
     )
 
     if (
         score >= WEAPON_VERIFY_THRESHOLD
         and confidence >= WEAPON_CONF_THRESHOLD
-        and (is_visually_validated or is_specialized_firearm or confidence >= 0.75)
+        and (is_visually_validated or is_specialized_firearm or confidence >= 0.70)
     ):
         reason = visual_diag if is_visually_validated else "MULTI_SIGNAL_STRUCTURE_VERIFIED"
         return ("WEAPON", target_label, reason) if return_reason else ("WEAPON", target_label)

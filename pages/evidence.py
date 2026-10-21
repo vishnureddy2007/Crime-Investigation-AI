@@ -41,7 +41,15 @@ def render() -> None:
 
     # Filter by Case
     case_map = {f"Case #{c['case_id']:03d} ({c['source_name']})": c for c in cases}
-    selected_label = st.selectbox("Select Case", list(case_map.keys()))
+    case_keys = list(case_map.keys())
+    current_cid = st.session_state.get("current_case_id") or st.session_state.get("last_analysis_case_id")
+    default_idx = 0
+    if current_cid is not None:
+        for idx, c in enumerate(cases):
+            if c["case_id"] == current_cid:
+                default_idx = idx
+                break
+    selected_label = st.selectbox("Select Case", case_keys, index=default_idx)
     c_data = case_map[selected_label]
     case_id = c_data["case_id"]
 

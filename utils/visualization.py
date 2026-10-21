@@ -22,12 +22,17 @@ _BOX_COLORS: dict[str, str] = {
 }
 
 def _color_for(det: Any) -> str:
-    if hasattr(det, "weapon_status"):
-        if det.weapon_status == "verified":
-            return "#00E5FF"  # High-visibility forensic cyan
-        elif det.weapon_status == "candidate":
-            return "#FFD166"  # Review needed amber
-    lbl = getattr(det, "label", str(det))
+    status = getattr(det, "weapon_status", "")
+    if status == "verified":
+        return "#00E5FF"  # High-visibility forensic cyan
+    elif status == "candidate":
+        return "#FFD166"  # Review needed amber
+    elif status == "rejected":
+        return "#6C757D"  # Muted gray for rejected audit artifacts
+
+    lbl = getattr(det, "label", str(det)).lower()
+    if lbl in {"weapon", "candidate_weapon"}:
+        return "#FFD166"  # Unverified candidate weapons are amber, never cyan
     return _BOX_COLORS.get(lbl, "#264653")
 
 def _font(size: int = 14) -> ImageFont.ImageFont:
@@ -41,7 +46,7 @@ def draw_detections(
     detections: Iterable[Detection],
     box_width: int | None = None,
 ) -> Image.Image:
-    """Return a copy of `image` with each detection drawn on it."""
+    """Return a copy of `image` with each active detection drawn on it."""
     annotated = image.copy()
     draw = ImageDraw.Draw(annotated)
     
@@ -56,6 +61,10 @@ def draw_detections(
     font = _font(font_size)
 
     for det in detections:
+        # Strictly skip rejected detections from primary evidence visualization
+        if getattr(det, "weapon_status", "") == "rejected":
+            continue
+
         x1, y1, x2, y2 = det.bbox.x1, det.bbox.y1, det.bbox.x2, det.bbox.y2
         color = _color_for(det)
 

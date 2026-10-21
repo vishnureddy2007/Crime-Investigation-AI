@@ -103,10 +103,13 @@ def _render_file_evidence_card(file_evidence: FileEvidence) -> None:
         # Optional Investigator Audit & Override Section (Section 15)
         weapon_dets = [
             det for det in d.detections
-            if getattr(det, "weapon_status", "") in {"verified", "candidate"}
-            or det.label.lower() in {"weapon", "knife", "candidate_weapon", "gun", "pistol", "rifle", "handgun", "revolver", "shotgun", "firearm"}
-            or det.class_name.lower() in {"weapon", "knife", "candidate_weapon", "gun", "pistol", "rifle", "handgun", "revolver", "shotgun", "firearm"}
-            or "weapon" in det.class_name.lower()
+            if getattr(det, "weapon_status", "") != "rejected"
+            and (
+                getattr(det, "weapon_status", "") in {"verified", "candidate"}
+                or det.label.lower() in {"weapon", "knife", "candidate_weapon", "gun", "pistol", "rifle", "handgun", "revolver", "shotgun", "firearm"}
+                or det.class_name.lower() in {"weapon", "knife", "candidate_weapon", "gun", "pistol", "rifle", "handgun", "revolver", "shotgun", "firearm"}
+                or "weapon" in det.class_name.lower()
+            )
         ]
         if weapon_dets:
             with st.expander("🛡️ Investigator Audit & Manual Override", expanded=True):

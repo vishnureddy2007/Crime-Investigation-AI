@@ -87,24 +87,27 @@ class DetectionResult:
 
     @property
     def count(self) -> int:
-        return len(self.detections)
+        return sum(1 for d in self.detections if getattr(d, "weapon_status", "") != "rejected")
 
     def classes(self) -> list[str]:
-        return [d.class_name for d in self.detections]
+        return [d.class_name for d in self.detections if getattr(d, "weapon_status", "") != "rejected"]
 
     def labels(self) -> list[str]:
-        return [d.label for d in self.detections]
+        return [d.label for d in self.detections if getattr(d, "weapon_status", "") != "rejected"]
 
     def counts_by_label(self) -> dict[str, int]:
         counts: dict[str, int] = {}
         for d in self.detections:
+            if getattr(d, "weapon_status", "") == "rejected":
+                continue
             counts[d.label] = counts.get(d.label, 0) + 1
         return counts
 
     def average_confidence(self) -> float:
-        if not self.detections:
+        valid = [d for d in self.detections if getattr(d, "weapon_status", "") != "rejected"]
+        if not valid:
             return 0.0
-        return sum(d.confidence for d in self.detections) / len(self.detections)
+        return sum(d.confidence for d in valid) / len(valid)
 
     @property
     def raw_detections_count(self) -> int:

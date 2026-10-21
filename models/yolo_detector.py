@@ -590,8 +590,9 @@ class MultiSourceDetector:
                 rel_area = (bw * bh) / max(1.0, float(W * H))
                 aspect = max(bw, bh) / max(1.0, min(bw, bh))
                 if bw >= 6 and bh >= 6 and (rel_area >= 0.0002 or d.confidence >= 0.70) and (aspect <= 8.5 or d.confidence >= 0.70):
-                    if bw * bh <= 0.95 * W * H:
-                        weapon_extra.append(d)
+                    if (rel_area <= 0.15 or d.confidence >= 0.65) and not (bw > 250 and bh > 200 and d.confidence < 0.60):
+                        if bw * bh <= 0.95 * W * H:
+                            weapon_extra.append(d)
 
         # Broader threat weapon model (knife + explosion + grenade + Gun).
         threat_extra: list[Detection] = []
@@ -630,8 +631,9 @@ class MultiSourceDetector:
                 rel_area = (bw * bh) / max(1.0, float(W * H))
                 aspect = max(bw, bh) / max(1.0, min(bw, bh))
                 if bw >= 6 and bh >= 6 and (rel_area >= 0.0002 or d.confidence >= 0.70) and (aspect <= 8.5 or d.confidence >= 0.70):
-                    if bw * bh <= 0.95 * W * H:
-                        threat_extra.append(d)
+                    if (rel_area <= 0.15 or d.confidence >= 0.65) and not (bw > 250 and bh > 200 and d.confidence < 0.60):
+                        if bw * bh <= 0.95 * W * H:
+                            threat_extra.append(d)
 
         raw_all = general_raw + weapon_scan_raw + weapon_extra + threat_extra
         merged = _cross_model_nms(
@@ -654,6 +656,7 @@ class MultiSourceDetector:
         # detection knows whether it is verified, candidate, or
         # non-weapon.
         verified = _verify_detections(merged, image=image)
+
         annotated = draw_detections(image, verified)
 
         weights_map: dict[str, str] = {}

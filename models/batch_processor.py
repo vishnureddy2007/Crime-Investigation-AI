@@ -401,16 +401,18 @@ def _per_file_metrics(detection: DetectionResult) -> dict[str, int]:
     knife_count = 0
     gun_count = 0
     for d in detection.detections:
-        lbl = d.label
         status = getattr(d, "weapon_status", "")
+        if status == "rejected":
+            continue
+        lbl = d.label
         if lbl == "knife":
             knife_count += 1
             weapon_count += 1
-        elif lbl == "candidate_weapon":
+        elif lbl == "candidate_weapon" or status == "candidate":
             candidate_weapon_count += 1
         elif lbl == "bottle":
             bottle_count += 1
-        elif lbl in ("weapon", "gun", "pistol", "rifle", "handgun", "firearm", "revolver", "Revolver", "shotgun", "Shotgun"):
+        elif lbl in ("weapon", "gun", "pistol", "rifle", "handgun", "firearm", "revolver", "Revolver", "shotgun", "Shotgun") or status == "verified":
             weapon_count += 1
             if lbl in ("gun", "pistol", "rifle", "handgun", "firearm", "revolver", "Revolver", "shotgun", "Shotgun"):
                 gun_count += 1
